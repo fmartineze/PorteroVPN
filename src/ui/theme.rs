@@ -14,6 +14,25 @@ pub const SURFACE: Color32 = Color32::from_rgb(22, 27, 34);
 pub const SURFACE_RAISED: Color32 = Color32::from_rgb(30, 36, 45);
 
 pub fn apply(ctx: &egui::Context) {
+    // Sin esto, la ventana sale con el tema CLARO por defecto de egui en
+    // cualquier Windows configurado en modo claro (visto en la practica en
+    // un equipo remoto por TeamViewer). El motivo: egui 0.29 guarda dos
+    // estilos, `dark_style` y `light_style`, y `set_style` de abajo solo
+    // escribe en el del tema activo en ese momento. Como aqui todavia no se
+    // ha pintado ningun frame, `system_theme` es `None` y egui cae a su
+    // `fallback_theme` (Dark), asi que toda la paleta de abajo aterriza en
+    // `dark_style`; en el primer frame llega el tema real del sistema desde
+    // winit y, si es claro, egui pasa a usar `light_style`, que nadie ha
+    // tocado. Fijando la preferencia a Dark, `set_style` apunta siempre a
+    // `dark_style` y el tema del sistema deja de poder pisarlo.
+    //
+    // Es lo correcto ademas de lo comodo: esta app tiene una unica paleta,
+    // oscura (las constantes de arriba), y hay trozos que se pintan a mano
+    // con ellas -la barra inferior de `app.rs`, el fondo de la fila de
+    // perfil seleccionada- sin pasar por el estilo. Con el tema claro
+    // activo, esos trozos seguian oscuros sobre un fondo blanco.
+    ctx.set_theme(egui::ThemePreference::Dark);
+
     let mut style = (*ctx.style()).clone();
 
     style.visuals = egui::Visuals::dark();
