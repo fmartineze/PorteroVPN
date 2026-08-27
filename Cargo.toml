@@ -6,12 +6,14 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["Portero VPN"]
+license = "Apache-2.0"
 
 [package]
 name = "portero-vpn"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description = "Cliente OpenVPN con comprobaciones de seguridad previas a la conexion"
 
 [[bin]]

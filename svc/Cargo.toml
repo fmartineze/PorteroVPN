@@ -3,6 +3,7 @@ name = "portero-vpn-svc"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description = "Servicio Windows minimo que lanza/mata openvpn.exe bajo peticion de la GUI de Portero VPN"
 
 [[bin]]

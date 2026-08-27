@@ -153,6 +153,19 @@ inutilizable en el siguiente arranque normal.
   `D:(A;;GA;;;AU)(A;;GA;;;SY)(A;;GA;;;BA)`), aceptable porque las unicas
   operaciones que ofrece son arrancar y parar `openvpn.exe`.
 
+## Licencia
+
+Portero VPN se distribuye bajo la **Licencia Apache 2.0** (ver `LICENSE` y
+`NOTICE`).
+
+`openvpn.exe` esta bajo GPLv2, pero **no se enlaza ni se redistribuye**: se
+ejecuta como proceso independiente y se habla con el por linea de comandos y
+por su management interface. Esa separacion es deliberada y es la base para que
+las obligaciones de la GPLv2 no alcancen a este codigo — no la revierta nadie
+sin revisar antes las implicaciones. El detalle completo, junto con el reparto
+de licencias de las 391 dependencias (todas permisivas) y el Lavapipe que si se
+empaqueta, esta en `THIRD_PARTY_NOTICES.md`.
+
 ## Limitaciones conocidas
 
 - Una sola conexion activa a la vez.

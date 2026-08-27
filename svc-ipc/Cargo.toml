@@ -3,6 +3,7 @@ name = "svc-ipc"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description = "Tipos de mensajes IPC compartidos entre la GUI de Portero VPN y PorteroVPNSvc"
 
 [dependencies]
