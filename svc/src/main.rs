@@ -407,13 +407,23 @@ async fn start_openvpn(profile_path: &str, passfile_path: &str, mgmt_port: u16) 
         .arg("--management-query-passwords")
         .arg("--management-signal")
         .arg("--log").arg(&log_path)
-        // Sin --windows-driver explicito, openvpn 2.6+ intenta usar Wintun
-        // por defecto con "dev tun". Si wintun.dll no esta presente junto a
-        // openvpn.exe (visto en este equipo: falta en OpenVPN\bin), el
-        // proceso se queda colgado en silencio nada mas arrancar, sin
-        // llegar a abrir la management interface ni imprimir ningun error
-        // (el log de openvpn se corta justo tras "DCO version"). El driver
-        // TAP-Windows6 clasico si esta instalado, asi que se fuerza su uso.
+        // ATENCION: estos dos flags NO son la solucion de ningun problema,
+        // pese a lo que decia el comentario anterior aqui. Se anadieron
+        // persiguiendo la teoria de que el arranque se colgaba en silencio
+        // por el driver DCO de openvpn 2.7, o por faltar wintun.dll en
+        // OpenVPN\bin. Ambas resultaron ser un espejismo: lo que colgaba de
+        // verdad era el prompt `ENTER PASSWORD:` de la management interface,
+        // que llega SIN salto de linea final y dejaba a la GUI esperando
+        // para siempre un '\n' que nunca llegaba (arreglado en
+        // `mgmt::client::wait_for_enter_password_prompt`). Lo que hacia que
+        // una conexion sana pareciera colgada en el log era que la
+        // verbosidad por defecto de `--log` no imprime la linea
+        // "MANAGEMENT: TCP Socket listening"; y openvpn 2.7 elimino Wintun
+        // por completo, asi que su aviso de obsolescencia es solo ruido.
+        //
+        // Se dejan puestos porque son inofensivos y el TAP-Windows6 clasico
+        // esta instalado igualmente, pero no hay que tratarlos como
+        // imprescindibles ni volver a perseguir esas dos teorias.
         .arg("--windows-driver").arg("tap-windows6")
         .arg("--disable-dco")
         .kill_on_drop(false);
