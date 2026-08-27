@@ -114,6 +114,12 @@ const AUTH_FAILED_MAX_RETRIES: u32 = 3;
 /// (ver `AUTH_FAILED_MAX_RETRIES`).
 const AUTH_FAILED_RETRY_DELAY: Duration = Duration::from_secs(3);
 
+// 8 argumentos, uno por encima del umbral de clippy. Agruparlos en un struct
+// de contexto solo moveria la lista de sitio: cada uno tiene un ciclo de vida
+// distinto (dos se consumen por valor, dos son extremos de canal que se
+// mueven a tareas, uno es un `watch` que se clona) y empaquetarlos obligaria
+// a desestructurarlos igualmente en la primera linea. Se deja como esta.
+#[allow(clippy::too_many_arguments)]
 async fn run_connection(
     profile: ProfileMeta,
     policy: SecurityPolicy,

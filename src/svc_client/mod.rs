@@ -90,22 +90,6 @@ impl SvcClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// No forma parte de `cargo test` normal: depende de que `PorteroVPNSvc`
-    /// este instalado y corriendo de verdad en la maquina donde se ejecute
-    /// (`cargo test -- --ignored --nocapture`), para contrastar contra
-    /// `manage-bde -status C:` a mano.
-    #[tokio::test]
-    #[ignore = "depende de PorteroVPNSvc corriendo de verdad en esta maquina"]
-    async fn real_query_bitlocker_matches_actual_state() {
-        let status = SvcClient::query_bitlocker().await.expect("consulta real a PorteroVPNSvc fallo");
-        println!("bitlocker status = {status:?}");
-    }
-}
-
 async fn send_request(request: IpcRequest) -> Result<IpcResponse, SvcClientError> {
     tracing::info!(?request, "conectando con PorteroVPNSvc");
     let client = connect_with_retry().await?;
@@ -155,5 +139,21 @@ async fn connect_with_retry() -> Result<tokio::net::windows::named_pipe::NamedPi
             }
             Err(_) => return Err(SvcClientError::Timeout),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No forma parte de `cargo test` normal: depende de que `PorteroVPNSvc`
+    /// este instalado y corriendo de verdad en la maquina donde se ejecute
+    /// (`cargo test -- --ignored --nocapture`), para contrastar contra
+    /// `manage-bde -status C:` a mano.
+    #[tokio::test]
+    #[ignore = "depende de PorteroVPNSvc corriendo de verdad en esta maquina"]
+    async fn real_query_bitlocker_matches_actual_state() {
+        let status = SvcClient::query_bitlocker().await.expect("consulta real a PorteroVPNSvc fallo");
+        println!("bitlocker status = {status:?}");
     }
 }

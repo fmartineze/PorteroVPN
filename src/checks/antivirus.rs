@@ -96,41 +96,6 @@ fn real_time_protection_enabled(product_state: u32) -> bool {
     (product_state & 0xF000) == REAL_TIME_PROTECTION_ON
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{query_antivirus_status, real_time_protection_enabled};
-
-    #[test]
-    fn detects_enabled_from_a_real_observed_value() {
-        // Windows Defender realmente activo en la maquina de desarrollo
-        // (`Get-MpComputerStatus` confirmando `RealTimeProtectionEnabled:
-        // True` en el mismo instante en que se consulto este valor).
-        assert!(real_time_protection_enabled(397568));
-    }
-
-    #[test]
-    fn detects_disabled_and_snoozed_and_expired() {
-        assert!(!real_time_protection_enabled(393216)); // off (valor real, ver tabla en el modulo)
-        // Construidos a partir del valor real de arriba desplazando solo el
-        // nibble de estado (bits 12-15), para probar snoozed/expired sin
-        // tener que provocarlos de verdad en una maquina real.
-        assert!(!real_time_protection_enabled(397568 + 0x1000)); // snoozed
-        assert!(!real_time_protection_enabled(397568 + 0x2000)); // expired
-    }
-
-    /// No forma parte de `cargo test` normal (depende del antivirus real de
-    /// la maquina donde se ejecute): sirve para comprobar a mano, con
-    /// `cargo test -- --ignored --nocapture`, que la consulta WMI real
-    /// concuerda con el estado real de Windows Defender/antivirus en ese
-    /// momento (ver `Get-MpComputerStatus` en PowerShell para contrastar).
-    #[test]
-    #[ignore = "depende del antivirus real de la maquina donde se ejecuta"]
-    fn real_query_matches_actual_state() {
-        let status = query_antivirus_status().expect("consulta real a SecurityCenter2 fallo");
-        println!("real_time_protection_enabled = {}", status.real_time_protection_enabled);
-    }
-}
-
 pub struct AntivirusActiveCheck;
 
 #[async_trait]
@@ -170,5 +135,40 @@ impl Check for AntivirusActiveCheck {
     // fallido que el usuario tenga que reintentar el mismo a mano.
     fn retry_policy(&self) -> RetryPolicy {
         RetryPolicy { attempts: 5, delay: Duration::from_secs(2) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{query_antivirus_status, real_time_protection_enabled};
+
+    #[test]
+    fn detects_enabled_from_a_real_observed_value() {
+        // Windows Defender realmente activo en la maquina de desarrollo
+        // (`Get-MpComputerStatus` confirmando `RealTimeProtectionEnabled:
+        // True` en el mismo instante en que se consulto este valor).
+        assert!(real_time_protection_enabled(397568));
+    }
+
+    #[test]
+    fn detects_disabled_and_snoozed_and_expired() {
+        assert!(!real_time_protection_enabled(393216)); // off (valor real, ver tabla en el modulo)
+        // Construidos a partir del valor real de arriba desplazando solo el
+        // nibble de estado (bits 12-15), para probar snoozed/expired sin
+        // tener que provocarlos de verdad en una maquina real.
+        assert!(!real_time_protection_enabled(397568 + 0x1000)); // snoozed
+        assert!(!real_time_protection_enabled(397568 + 0x2000)); // expired
+    }
+
+    /// No forma parte de `cargo test` normal (depende del antivirus real de
+    /// la maquina donde se ejecute): sirve para comprobar a mano, con
+    /// `cargo test -- --ignored --nocapture`, que la consulta WMI real
+    /// concuerda con el estado real de Windows Defender/antivirus en ese
+    /// momento (ver `Get-MpComputerStatus` en PowerShell para contrastar).
+    #[test]
+    #[ignore = "depende del antivirus real de la maquina donde se ejecuta"]
+    fn real_query_matches_actual_state() {
+        let status = query_antivirus_status().expect("consulta real a SecurityCenter2 fallo");
+        println!("real_time_protection_enabled = {}", status.real_time_protection_enabled);
     }
 }

@@ -276,7 +276,7 @@ fn find_matching_key<'a>(public_key: &'a SignedPublicKey, signature: &DetachedSi
     let issuer_ids = signature.signature.issuer_key_id();
     let issuer_fps = signature.signature.issuer_fingerprint();
     let is_match = |key_id: &KeyId, fingerprint: &Fingerprint| {
-        issuer_ids.iter().any(|id| *id == key_id) || issuer_fps.iter().any(|fp| *fp == fingerprint)
+        issuer_ids.contains(&key_id) || issuer_fps.contains(&fingerprint)
     };
 
     if is_match(&public_key.legacy_key_id(), &public_key.fingerprint()) {

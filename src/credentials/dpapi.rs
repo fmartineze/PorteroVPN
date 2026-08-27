@@ -36,14 +36,14 @@ unsafe fn blob_to_vec(blob: &CRYPT_INTEGER_BLOB) -> Vec<u8> {
 /// `ProfileMeta::credentials_blob`.
 pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, DpapiError> {
     let input = blob_from_slice(plaintext);
-    let mut entropy = blob_from_slice(APP_ENTROPY);
+    let entropy = blob_from_slice(APP_ENTROPY);
     let mut output = CRYPT_INTEGER_BLOB::default();
 
     unsafe {
         CryptProtectData(
             &input,
             PCWSTR::null(),
-            Some(&mut entropy),
+            Some(&entropy),
             None,
             None,
             CRYPTPROTECT_UI_FORBIDDEN,
@@ -64,14 +64,14 @@ pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, DpapiError> {
 /// adicional nuestra -- ver plan, seccion 4).
 pub fn unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, DpapiError> {
     let input = blob_from_slice(ciphertext);
-    let mut entropy = blob_from_slice(APP_ENTROPY);
+    let entropy = blob_from_slice(APP_ENTROPY);
     let mut output = CRYPT_INTEGER_BLOB::default();
 
     unsafe {
         CryptUnprotectData(
             &input,
             None,
-            Some(&mut entropy),
+            Some(&entropy),
             None,
             None,
             CRYPTPROTECT_UI_FORBIDDEN,
