@@ -1,0 +1,9 @@
+[package]
+name = "svc-ipc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Tipos de mensajes IPC compartidos entre la GUI de Portero VPN y PorteroVPNSvc"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

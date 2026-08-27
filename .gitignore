@@ -1,0 +1,9 @@
+# Artefactos de compilacion de cargo.
+/target/
+
+# Instalador generado por Inno Setup (se regenera con ISCC.exe, ver README).
+/installer/output/
+
+# Logs sueltos que puedan quedar en la carpeta durante el desarrollo. Los de
+# verdad viven en C:\ProgramData\PorteroVPN\logs\, fuera del repositorio.
+*.log

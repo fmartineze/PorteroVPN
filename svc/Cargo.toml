@@ -1,0 +1,36 @@
+[package]
+name = "portero-vpn-svc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Servicio Windows minimo que lanza/mata openvpn.exe bajo peticion de la GUI de Portero VPN"
+
+[[bin]]
+name = "portero-vpn-svc"
+path = "src/main.rs"
+
+[dependencies]
+svc-ipc = { path = "../svc-ipc" }
+
+windows-service = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "process", "sync", "io-util", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wmi = "0.14"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+anyhow = "1"
+
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }
+
+[build-dependencies]
+ico = "0.5.0"
+winresource = { version = "0.1.31", default-features = false }
