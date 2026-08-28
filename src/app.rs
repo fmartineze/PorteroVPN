@@ -1050,7 +1050,8 @@ impl PorteroApp {
         draw_modal_backdrop(ctx);
 
         let mut submitted = false;
-        egui::Window::new(t(Msg::CredentialsTitle))
+        let mut cancelled = false;
+        let window = egui::Window::new(t(Msg::CredentialsTitle))
             .id(egui::Id::new("credential_modal"))
             .collapsible(false)
             .resizable(false)
@@ -1081,12 +1082,29 @@ impl PorteroApp {
                 ui.checkbox(&mut form.remember, t(Msg::RememberOnDevice));
 
                 ui.add_space(4.0);
+                // `right_to_left`: el primero que se anade queda mas a la
+                // derecha, asi que "Conectar" es el boton principal y
+                // "Cancelar" queda a su izquierda.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add_enabled(!form.username.is_empty(), egui::Button::new(t(Msg::BtnConnectSmall))).clicked() {
                         submitted = true;
                     }
+                    if ui.button(t(Msg::BtnCancel)).clicked() {
+                        cancelled = true;
+                    }
                 });
             });
+
+        // El dialogo tiene que quedar por encima del fondo atenuado. Los dos
+        // viven en la capa `Foreground`, y ahi egui ordena por ultima
+        // interaccion: un clic en el fondo lo subia por encima del dialogo,
+        // que desaparecia tras el velo oscuro mientras ese mismo velo se
+        // tragaba todos los clics. La ventana quedaba a oscuras y muerta, sin
+        // forma de recuperarla. Reafirmando el orden en cada frame, el fondo
+        // no puede adelantarlo pase lo que pase.
+        if let Some(window) = window {
+            ctx.move_to_top(window.response.layer_id);
+        }
 
         if submitted {
             let credentials = Credentials { username: form.username.clone(), password: form.password.clone() };
@@ -1099,6 +1117,12 @@ impl PorteroApp {
                     }
                 }
             }
+        } else if cancelled {
+            // No se restaura `pending_credentials`: sin credenciales la
+            // conexion no puede continuar, asi que cancelar el dialogo cancela
+            // el intento entero. Se manda por el mismo canal que usa el boton
+            // "CANCELAR CONEXION" de abajo.
+            let _ = active.handle.cancel_tx.send(true);
         } else {
             active.pending_credentials = Some(form);
         }
@@ -1119,7 +1143,7 @@ impl PorteroApp {
         let mut close_requested = false;
         let mut retry_requested = false;
 
-        egui::Window::new(&title)
+        let window = egui::Window::new(&title)
             .id(egui::Id::new("error_modal"))
             .collapsible(false)
             .resizable(false)
@@ -1140,6 +1164,13 @@ impl PorteroApp {
                     });
                 });
             });
+
+        // Mismo motivo que en el modal de credenciales: sin esto, un clic en
+        // el fondo atenuado lo sube por encima del dialogo y deja la ventana
+        // oscurecida y sin respuesta.
+        if let Some(window) = window {
+            ctx.move_to_top(window.response.layer_id);
+        }
 
         if retry_requested {
             self.error_modal = None;
@@ -1561,6 +1592,14 @@ impl PorteroApp {
 /// (credenciales, errores de conexion): se pinta en la capa `Foreground` y,
 /// al capturar el clic, evita que se pueda interactuar con lo que hay
 /// detras mientras el modal esta abierto.
+///
+/// **Comparte capa con los dialogos que atenua, y dentro de una misma
+/// `Order` egui apila por ultima interaccion.** Un clic en el fondo lo subia
+/// por encima del dialogo: la ventana se quedaba oscurecida, sin dialogo
+/// visible y sin responder a nada, porque este mismo fondo se tragaba los
+/// clics. Por eso cada modal reafirma su posicion con `ctx.move_to_top` en
+/// cada frame despues de pintarse; quien anada otro dialogo con fondo
+/// atenuado tiene que hacer lo mismo.
 fn draw_modal_backdrop(ctx: &egui::Context) {
     egui::Area::new(egui::Id::new("modal_backdrop"))
         .order(egui::Order::Foreground)
