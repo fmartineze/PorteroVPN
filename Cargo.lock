@@ -3539,7 +3539,7 @@ dependencies = [
 
 [[package]]
 name = "portero-vpn"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3574,7 +3574,7 @@ dependencies = [
 
 [[package]]
 name = "portero-vpn-svc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "ico",
@@ -4422,7 +4422,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svc-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
