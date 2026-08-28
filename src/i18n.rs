@@ -202,7 +202,6 @@ declare_messages! {
     ErrCertificateTitle   => { es: "Error de certificado", en: "Certificate error" },
     ErrRejectedTitle      => { es: "Conexion rechazada",   en: "Connection rejected" },
     ErrConnectionTitle    => { es: "Error de conexion",    en: "Connection error" },
-    BtnForgetCredentials  => { es: "Olvidar credenciales", en: "Forget credentials" },
     BtnClose              => { es: "Cerrar",               en: "Close" },
 
     // --- Importar / editar perfil -------------------------------------

@@ -68,7 +68,6 @@ struct ErrorModal {
     title: String,
     message: String,
     profile_id: Uuid,
-    can_forget_credentials: bool,
 }
 
 struct ActiveConnection {
@@ -335,7 +334,6 @@ impl PorteroApp {
                         title: t(Msg::ErrCannotConnectTitle).to_string(),
                         message: reason,
                         profile_id: active.profile_id,
-                        can_forget_credentials: false,
                     });
                 }
                 AppEvent::Connecting { last_state } => active.phase = ConnectionPhase::Connecting { last_state },
@@ -369,13 +367,10 @@ impl PorteroApp {
                 }
                 AppEvent::AuthFailed => {
                     active.phase = ConnectionPhase::AuthFailed;
-                    let can_forget_credentials =
-                        self.profiles.iter().any(|p| p.id == active.profile_id && p.remember_credentials);
                     self.error_modal = Some(ErrorModal {
                         title: t(Msg::ErrAuthFailedTitle).to_string(),
                         message: t(Msg::ErrAuthFailedBody).to_string(),
                         profile_id: active.profile_id,
-                        can_forget_credentials,
                     });
                 }
                 AppEvent::CertificateError(detail) => {
@@ -385,7 +380,6 @@ impl PorteroApp {
                         title: t(Msg::ErrCertificateTitle).to_string(),
                         message,
                         profile_id: active.profile_id,
-                        can_forget_credentials: false,
                     });
                 }
                 AppEvent::ReconnectLoop(attempts) => {
@@ -395,7 +389,6 @@ impl PorteroApp {
                         title: t(Msg::ErrRejectedTitle).to_string(),
                         message,
                         profile_id: active.profile_id,
-                        can_forget_credentials: false,
                     });
                 }
                 AppEvent::Error(message) => {
@@ -404,7 +397,6 @@ impl PorteroApp {
                         title: t(Msg::ErrConnectionTitle).to_string(),
                         message,
                         profile_id: active.profile_id,
-                        can_forget_credentials: false,
                     });
                 }
                 AppEvent::Disconnected => {
@@ -1121,13 +1113,11 @@ impl PorteroApp {
         let title = modal.title.clone();
         let message = modal.message.clone();
         let profile_id = modal.profile_id;
-        let can_forget_credentials = modal.can_forget_credentials;
 
         draw_modal_backdrop(ctx);
 
         let mut close_requested = false;
         let mut retry_requested = false;
-        let mut forget_requested = false;
 
         egui::Window::new(&title)
             .id(egui::Id::new("error_modal"))
@@ -1143,9 +1133,6 @@ impl PorteroApp {
                     if ui.button(t(Msg::BtnRetry)).clicked() {
                         retry_requested = true;
                     }
-                    if can_forget_credentials && ui.button(t(Msg::BtnForgetCredentials)).clicked() {
-                        forget_requested = true;
-                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(t(Msg::BtnClose)).clicked() {
                             close_requested = true;
@@ -1153,17 +1140,6 @@ impl PorteroApp {
                     });
                 });
             });
-
-        if forget_requested {
-            if let Ok(mut meta) = storage::load_profile(profile_id) {
-                credentials::forget_for_profile(&mut meta);
-                let _ = storage::save_profile_meta(&meta);
-                if let Some(cached) = self.profiles.iter_mut().find(|p| p.id == profile_id) {
-                    cached.remember_credentials = false;
-                    cached.credentials_blob = None;
-                }
-            }
-        }
 
         if retry_requested {
             self.error_modal = None;
