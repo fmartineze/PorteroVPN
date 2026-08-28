@@ -145,6 +145,10 @@ pub struct PorteroApp {
 
     settings_unlocked: bool,
     settings_password_input: String,
+    /// Pide que el campo de contrasena de Configuracion tome el foco en el
+    /// proximo frame. Se activa al entrar en la pantalla y tras una
+    /// contrasena incorrecta; lo consume `render_settings_screen`.
+    settings_focus_password: bool,
     settings_error: Option<String>,
     first_run: Option<FirstRunState>,
     change_password: ChangePasswordState,
@@ -241,6 +245,7 @@ impl PorteroApp {
             edit_draft: None,
             edit_error: None,
             settings_unlocked: false,
+            settings_focus_password: false,
             settings_password_input: String::new(),
             settings_error: None,
             first_run,
@@ -572,6 +577,10 @@ impl PorteroApp {
                         .clicked()
                     {
                         self.screen = Screen::Settings;
+                        // Si toca pedir contrasena, que se pueda escribir sin
+                        // pinchar antes en el campo. Si la seccion ya esta
+                        // desbloqueada nadie lo consume y da igual.
+                        self.settings_focus_password = true;
                     }
                 });
             });
@@ -1393,6 +1402,16 @@ impl PorteroApp {
                 ui.add_space(12.0);
                 ui.set_max_width(320.0);
                 let password_field = ui.add(egui::TextEdit::singleline(&mut self.settings_password_input).password(true));
+
+                // Foco automatico para poder escribir sin tener que pinchar
+                // antes en el campo. Solo cuando esta pendiente, no en cada
+                // frame: pedirlo siempre secuestraria el foco e impediria,
+                // por ejemplo, usar el tabulador para llegar al boton.
+                if self.settings_focus_password {
+                    self.settings_focus_password = false;
+                    password_field.request_focus();
+                }
+
                 let submitted_with_enter =
                     password_field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
@@ -1407,7 +1426,12 @@ impl PorteroApp {
                                 self.settings_unlocked = true;
                                 self.settings_error = None;
                             }
-                            Err(_) => self.settings_error = Some(t(Msg::ErrWrongPassword).to_string()),
+                            Err(_) => {
+                                self.settings_error = Some(t(Msg::ErrWrongPassword).to_string());
+                                // El campo se vacia abajo: devolver el foco
+                                // para poder reintentar escribiendo directamente.
+                                self.settings_focus_password = true;
+                            }
                         },
                         _ => self.settings_error = Some(t(Msg::ErrNoPasswordSet).to_string()),
                     }
