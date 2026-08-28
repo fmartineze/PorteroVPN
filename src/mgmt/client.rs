@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
+use crate::i18n::{self, t, Msg};
 use super::protocol::{parse_line, ManagementEvent};
 
 pub struct ManagementClient {
@@ -47,13 +48,13 @@ impl ManagementClient {
                 Some(other) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("la management interface no acepto la contrasena (respuesta: {other:?})"),
+                        i18n::password_rejected_by_mgmt(&format!("{other:?}")),
                     ));
                 }
                 None => {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
-                        "conexion cerrada justo despues de enviar la contrasena",
+                        t(Msg::ErrClosedAfterPassword),
                     ));
                 }
             }
@@ -102,7 +103,7 @@ impl ManagementClient {
                     discarded = %String::from_utf8_lossy(&discarded),
                     "EOF esperando el prompt ENTER PASSWORD:"
                 );
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "conexion cerrada durante el handshake"));
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, t(Msg::ErrClosedDuringHandshake)));
             }
             total += 1;
             seen.push(byte[0]);

@@ -256,18 +256,42 @@ pub struct AppPreferences {
     /// Activo por defecto: minimizar la ventana a la bandeja en cuanto una
     /// conexion llega a "Conectado", en vez de dejarla ocupando el panel.
     pub minimize_on_connect: bool,
+
+    /// Idioma de la interfaz. Se resuelve una sola vez, en el primer arranque,
+    /// contra el idioma de Windows (ver `bootstrap_default`); despues manda lo
+    /// que el usuario elija en Configuracion.
+    ///
+    /// `#[serde(default)]` **es imprescindible**: los `preferences.toml` que ya
+    /// existen en equipos donde la app se ha usado no tienen este campo, y sin
+    /// el atributo fallaria la deserializacion entera. Como quien llama
+    /// (`app.rs`) cae a `AppPreferences::default()` cuando la carga falla, el
+    /// error seria mudo y ademas se llevaria por delante `minimize_on_connect`
+    /// en cada arranque.
+    #[serde(default)]
+    pub language: crate::i18n::Lang,
 }
 
 impl Default for AppPreferences {
     fn default() -> Self {
-        Self { minimize_on_connect: true }
+        Self { minimize_on_connect: true, language: crate::i18n::Lang::default() }
+    }
+}
+
+impl AppPreferences {
+    /// Preferencias de arranque cuando `preferences.toml` todavia no existe.
+    ///
+    /// Se separa de `Default` para que este siga siendo puro y la consulta al
+    /// API de Windows quede acotada al camino de primer arranque -- mismo
+    /// reparto que `SecurityPolicy::bootstrap_default`.
+    pub fn bootstrap_default() -> Self {
+        Self { language: crate::i18n::detect_system_language(), ..Self::default() }
     }
 }
 
 pub fn load_preferences() -> io::Result<AppPreferences> {
     let path = preferences_path();
     if !path.exists() {
-        let prefs = AppPreferences::default();
+        let prefs = AppPreferences::bootstrap_default();
         save_preferences(&prefs)?;
         return Ok(prefs);
     }
@@ -405,9 +429,27 @@ mod tests {
             assert!(prefs.minimize_on_connect);
             assert!(preferences_path().exists());
 
-            let updated = AppPreferences { minimize_on_connect: false };
+            let updated = AppPreferences { minimize_on_connect: false, ..AppPreferences::default() };
             save_preferences(&updated).expect("save_preferences fallo");
             assert_eq!(load_preferences().unwrap(), updated);
+        });
+    }
+
+    /// Los equipos donde la app ya se uso tienen un `preferences.toml` sin
+    /// campo `language`. Debe seguir leyendose, conservando lo que hubiera
+    /// guardado: sin `#[serde(default)]` fallaria la deserializacion entera y
+    /// `app.rs`, que cae a los valores por defecto en silencio, revertiria
+    /// tambien `minimize_on_connect` en cada arranque.
+    #[test]
+    fn preferences_written_before_language_existed_still_load() {
+        with_temp_program_data(|| {
+            ensure_data_dirs().expect("ensure_data_dirs fallo");
+            std::fs::write(preferences_path(), "minimize_on_connect = false\n")
+                .expect("no se pudo escribir el preferences.toml antiguo");
+
+            let prefs = load_preferences().expect("load_preferences fallo con el formato antiguo");
+            assert!(!prefs.minimize_on_connect, "se perdio la preferencia ya guardada");
+            assert_eq!(prefs.language, crate::i18n::Lang::default());
         });
     }
 }

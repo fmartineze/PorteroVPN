@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::checks::{CheckOutcome, CheckRegistry, CheckRunResult, WmiDataSource};
 use crate::connection::{self, AppEvent, ConnectionHandle};
 use crate::credentials::{self, Credentials};
+use crate::i18n::{self, t, Lang, Msg};
 use crate::openvpn_install::{self, InstallEvent};
 use crate::service_ctl::{self, ServiceInstallState};
 use crate::storage::{self, ProfileMeta, SecurityPolicy};
@@ -287,7 +288,7 @@ impl PorteroApp {
         let _guard = self.rt.enter();
         self.openvpn_install_rx = Some(openvpn_install::spawn_install());
         self.openvpn_install_state =
-            OpenVpnInstallUiState::Working("Buscando la ultima version de OpenVPN...".to_string());
+            OpenVpnInstallUiState::Working(t(Msg::InstallSearching).to_string());
     }
 
     fn drain_openvpn_install_events(&mut self) {
@@ -324,7 +325,7 @@ impl PorteroApp {
                 AppEvent::ChecksFailed(reason) => {
                     active.phase = ConnectionPhase::ChecksFailed;
                     self.error_modal = Some(ErrorModal {
-                        title: "No se puede conectar".to_string(),
+                        title: t(Msg::ErrCannotConnectTitle).to_string(),
                         message: reason,
                         profile_id: active.profile_id,
                         can_forget_credentials: false,
@@ -364,27 +365,27 @@ impl PorteroApp {
                     let can_forget_credentials =
                         self.profiles.iter().any(|p| p.id == active.profile_id && p.remember_credentials);
                     self.error_modal = Some(ErrorModal {
-                        title: "Autenticacion fallida".to_string(),
-                        message: "Usuario o contrasena incorrectos.".to_string(),
+                        title: t(Msg::ErrAuthFailedTitle).to_string(),
+                        message: t(Msg::ErrAuthFailedBody).to_string(),
                         profile_id: active.profile_id,
                         can_forget_credentials,
                     });
                 }
                 AppEvent::CertificateError(detail) => {
-                    let message = format!("No se pudo verificar el certificado del servidor: {detail}");
+                    let message = i18n::certificate_not_verified(&detail);
                     active.phase = ConnectionPhase::Failed;
                     self.error_modal = Some(ErrorModal {
-                        title: "Error de certificado".to_string(),
+                        title: t(Msg::ErrCertificateTitle).to_string(),
                         message,
                         profile_id: active.profile_id,
                         can_forget_credentials: false,
                     });
                 }
                 AppEvent::ReconnectLoop(attempts) => {
-                    let message = format!("El servidor rechaza la conexion repetidamente (intentos: {attempts}).");
+                    let message = i18n::server_rejects_repeatedly(attempts);
                     active.phase = ConnectionPhase::Failed;
                     self.error_modal = Some(ErrorModal {
-                        title: "Conexion rechazada".to_string(),
+                        title: t(Msg::ErrRejectedTitle).to_string(),
                         message,
                         profile_id: active.profile_id,
                         can_forget_credentials: false,
@@ -393,7 +394,7 @@ impl PorteroApp {
                 AppEvent::Error(message) => {
                     active.phase = ConnectionPhase::Failed;
                     self.error_modal = Some(ErrorModal {
-                        title: "Error de conexion".to_string(),
+                        title: t(Msg::ErrConnectionTitle).to_string(),
                         message,
                         profile_id: active.profile_id,
                         can_forget_credentials: false,
@@ -439,7 +440,7 @@ impl PorteroApp {
     /// `render_import_dialog` pinta a continuacion.
     fn request_profile_import(&mut self) {
         if let Some(path) = rfd::FileDialog::new().add_filter("OpenVPN", &["ovpn"]).pick_file() {
-            let default_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Perfil").to_string();
+            let default_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(t(Msg::DefaultProfileName)).to_string();
             self.import_draft = Some(ImportDraft {
                 source_path: path,
                 display_name: default_name,
@@ -561,14 +562,14 @@ impl PorteroApp {
         let bar_rect = ui.max_rect();
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
             ui.horizontal(|ui| {
-                if ui.selectable_label(self.screen == Screen::Connections, "Conexiones").clicked() {
+                if ui.selectable_label(self.screen == Screen::Connections, t(Msg::NavConnections)).clicked() {
                     self.screen = Screen::Connections;
                 }
                 // `selectable_label` con `false` fijo (nunca "seleccionado"):
                 // es una accion, no una pestana, pero con la misma
                 // apariencia que Conexiones para que el menu superior quede
                 // uniforme.
-                if ui.selectable_label(false, "Importar ovpn").clicked() {
+                if ui.selectable_label(false, t(Msg::NavImportOvpn)).clicked() {
                     self.request_profile_import();
                 }
                 // Configuracion, sola, justificada del todo al borde
@@ -578,7 +579,7 @@ impl PorteroApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .selectable_label(self.screen == Screen::Settings, RichText::new("\u{2699}").size(16.0))
-                        .on_hover_text("Configuracion")
+                        .on_hover_text(t(Msg::NavSettingsTip))
                         .clicked()
                     {
                         self.screen = Screen::Settings;
@@ -629,36 +630,36 @@ impl PorteroApp {
         let (status, label, fill, enabled, disabled_reason) = if let Some(active) = &self.active {
             let is_connected = matches!(active.phase, ConnectionPhase::Connected { .. });
             let status = match &active.phase {
-                ConnectionPhase::RunningChecks => "Comprobando seguridad...".to_string(),
-                ConnectionPhase::Connecting { last_state } => format!("Conectando... ({last_state})"),
-                ConnectionPhase::Connected { .. } => format!("Conectado a {}", active.display_name),
+                ConnectionPhase::RunningChecks => t(Msg::StatusCheckingSecurity).to_string(),
+                ConnectionPhase::Connecting { last_state } => i18n::connecting_with_state(last_state),
+                ConnectionPhase::Connected { .. } => i18n::connected_to(&active.display_name),
                 ConnectionPhase::ChecksFailed | ConnectionPhase::AuthFailed | ConnectionPhase::Failed => {
-                    "La conexion fallo".to_string()
+                    t(Msg::StatusConnectionFailed).to_string()
                 }
             };
-            let label = if is_connected { "DESCONECTAR" } else { "CANCELAR CONEXION" };
+            let label = if is_connected { t(Msg::BtnDisconnect) } else { t(Msg::BtnCancelConnect) };
             (status, label, theme::DANGER, true, None)
         } else {
             let service_ready = self.service_state != ServiceInstallState::NotInstalled;
             let selected = self.selected_profile.and_then(|id| self.profiles.iter().find(|p| p.id == id));
             let status = if let Some(profile) = selected {
-                format!("Listo para conectar: {}", profile.display_name)
+                i18n::ready_to_connect(&profile.display_name)
             } else if self.profiles.is_empty() {
-                "Importa un perfil .ovpn para empezar".to_string()
+                t(Msg::StatusImportToStart).to_string()
             } else {
-                "Elige una conexion de la lista".to_string()
+                t(Msg::StatusChooseConnection).to_string()
             };
             let can_connect = service_ready && self.openvpn_installed && selected.is_some();
             let reason = if !service_ready {
-                Some("Instala el servicio PorteroVPNSvc para poder conectar.")
+                Some(t(Msg::TipInstallService))
             } else if !self.openvpn_installed {
-                Some("Instala OpenVPN Community para poder conectar.")
+                Some(t(Msg::TipInstallOpenVpn))
             } else if selected.is_none() {
-                Some("Elige una conexion de la lista.")
+                Some(t(Msg::TipChooseConnection))
             } else {
                 None
             };
-            (status, "CONECTAR", theme::ACCENT, can_connect, reason)
+            (status, t(Msg::BtnConnect), theme::ACCENT, can_connect, reason)
         };
 
         let button_fill = if !enabled {
@@ -724,9 +725,9 @@ impl PorteroApp {
         if self.service_state == ServiceInstallState::NotInstalled {
             ui.colored_label(
                 theme::WARNING,
-                "El servicio PorteroVPNSvc no esta instalado todavia: hace falta para poder conectar.",
+                t(Msg::BannerServiceMissing),
             );
-            if ui.button("Instalar servicio").clicked() {
+            if ui.button(t(Msg::BtnInstallService)).clicked() {
                 self.run_service_action("install");
             }
             if let Some(error) = &self.service_action_error {
@@ -736,7 +737,7 @@ impl PorteroApp {
         } else if let Some(warning) = &self.service_warning {
             ui.colored_label(
                 theme::DANGER,
-                format!("El servicio PorteroVPNSvc esta instalado pero no responde: {warning}"),
+                i18n::service_not_responding(warning),
             );
             ui.separator();
         }
@@ -746,9 +747,9 @@ impl PorteroApp {
                 OpenVpnInstallUiState::Idle => {
                     ui.colored_label(
                         theme::WARNING,
-                        "OpenVPN Community no esta instalado todavia: hace falta para poder conectar.",
+                        t(Msg::BannerOpenVpnMissing),
                     );
-                    if ui.button("Instalar OpenVPN").clicked() {
+                    if ui.button(t(Msg::BtnInstallOpenVpn)).clicked() {
                         self.start_openvpn_install();
                     }
                 }
@@ -759,8 +760,8 @@ impl PorteroApp {
                     });
                 }
                 OpenVpnInstallUiState::Error(error) => {
-                    ui.colored_label(theme::DANGER, format!("No se pudo instalar OpenVPN: {error}"));
-                    if ui.button("Reintentar").clicked() {
+                    ui.colored_label(theme::DANGER, i18n::openvpn_install_failed(error));
+                    if ui.button(t(Msg::BtnRetry)).clicked() {
                         self.start_openvpn_install();
                     }
                 }
@@ -778,7 +779,7 @@ impl PorteroApp {
         ui.separator();
 
         if self.profiles.is_empty() {
-            ui.label("Todavia no has importado ningun perfil .ovpn.");
+            ui.label(t(Msg::NoProfilesYet));
         }
 
         // Alto maximo para que la lista haga scroll en vez de empujar el
@@ -794,7 +795,7 @@ impl PorteroApp {
 
         if let Some(active) = &self.active {
             ui.separator();
-            ui.heading(format!("Conectando a {}", active.display_name));
+            ui.heading(i18n::connecting_to(&active.display_name));
         }
         self.render_active_connection_card(ui);
     }
@@ -833,11 +834,11 @@ impl PorteroApp {
 
         let (status_color, status_text) = if is_active {
             match &self.active.as_ref().unwrap().phase {
-                ConnectionPhase::RunningChecks => (theme::WARNING, "Comprobando..."),
-                ConnectionPhase::Connecting { .. } => (theme::WARNING, "Conectando..."),
-                ConnectionPhase::Connected { .. } => (theme::SUCCESS, "Conectado"),
+                ConnectionPhase::RunningChecks => (theme::WARNING, t(Msg::RowChecking)),
+                ConnectionPhase::Connecting { .. } => (theme::WARNING, t(Msg::RowConnecting)),
+                ConnectionPhase::Connected { .. } => (theme::SUCCESS, t(Msg::RowConnected)),
                 ConnectionPhase::ChecksFailed | ConnectionPhase::Failed | ConnectionPhase::AuthFailed => {
-                    (theme::DANGER, "Error")
+                    (theme::DANGER, t(Msg::RowError))
                 }
             }
         } else {
@@ -913,7 +914,7 @@ impl PorteroApp {
             ui.set_width(ui.available_width());
 
             if !check_results.is_empty() {
-                ui.label(RichText::new("Comprobaciones de seguridad").strong());
+                ui.label(RichText::new(t(Msg::SecurityChecksHeading)).strong());
                 for result in &check_results {
                     let (color, symbol) = match &result.outcome {
                         CheckOutcome::Pass => (theme::SUCCESS, "\u{2714}"),
@@ -921,7 +922,7 @@ impl PorteroApp {
                     };
                     ui.horizontal(|ui| {
                         ui.colored_label(color, symbol);
-                        ui.label(&result.display_name);
+                        ui.label(t(result.display_name));
                         if let CheckOutcome::Fail { reason } | CheckOutcome::Indeterminate { reason } = &result.outcome {
                             ui.label(RichText::new(reason).color(theme::DANGER).italics());
                         }
@@ -934,34 +935,30 @@ impl PorteroApp {
                 ConnectionPhase::RunningChecks => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Ejecutando comprobaciones de seguridad...");
+                        ui.label(t(Msg::RunningSecurityChecks));
                     });
                 }
                 ConnectionPhase::Connecting { last_state } => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(format!("Conectando... ({last_state})"));
+                        ui.label(i18n::connecting_with_state(last_state));
                     });
                 }
                 ConnectionPhase::Connected { local_ip, remote_ip, since } => {
                     let elapsed = since.elapsed();
-                    ui.colored_label(theme::SUCCESS, "Conectado");
-                    ui.label(format!("IP local: {}", local_ip.clone().unwrap_or_else(|| "-".into())));
-                    ui.label(format!("Servidor: {}", remote_ip.clone().unwrap_or_else(|| "-".into())));
-                    ui.label(format!("Tiempo conectado: {}s", elapsed.as_secs()));
-                    ui.label(format!(
-                        "Trafico: {} recibidos / {} enviados",
-                        format_bytes(bytes_in),
-                        format_bytes(bytes_out)
-                    ));
+                    ui.colored_label(theme::SUCCESS, t(Msg::RowConnected));
+                    ui.label(i18n::local_ip(local_ip.as_deref().unwrap_or("-")));
+                    ui.label(i18n::server_ip(remote_ip.as_deref().unwrap_or("-")));
+                    ui.label(i18n::connected_time(elapsed.as_secs()));
+                    ui.label(i18n::traffic(&format_bytes(bytes_in), &format_bytes(bytes_out)));
                 }
                 ConnectionPhase::ChecksFailed | ConnectionPhase::AuthFailed | ConnectionPhase::Failed => {
-                    ui.colored_label(theme::DANGER, "Ver el aviso de error.");
+                    ui.colored_label(theme::DANGER, t(Msg::SeeErrorNotice));
                 }
             }
 
             ui.horizontal(|ui| {
-                if ui.button("Ver log de conexion").clicked() {
+                if ui.button(t(Msg::BtnViewConnLog)).clicked() {
                     show_log_requested = true;
                 }
             });
@@ -982,7 +979,7 @@ impl PorteroApp {
         draw_modal_backdrop(ctx);
 
         let mut submitted = false;
-        egui::Window::new("Credenciales requeridas")
+        egui::Window::new(t(Msg::CredentialsTitle))
             .id(egui::Id::new("credential_modal"))
             .collapsible(false)
             .resizable(false)
@@ -1000,21 +997,21 @@ impl PorteroApp {
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(format!("La conexion VPN pide usuario y contrasena ({}).", form.context));
+                ui.label(i18n::vpn_asks_credentials(&form.context));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label("Usuario:");
+                    ui.label(t(Msg::FieldUsername));
                     ui.text_edit_singleline(&mut form.username);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Contrasena:");
+                    ui.label(t(Msg::FieldPassword));
                     ui.add(egui::TextEdit::singleline(&mut form.password).password(true));
                 });
-                ui.checkbox(&mut form.remember, "Recordar credenciales en este equipo");
+                ui.checkbox(&mut form.remember, t(Msg::RememberOnDevice));
 
                 ui.add_space(4.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(!form.username.is_empty(), egui::Button::new("Conectar")).clicked() {
+                    if ui.add_enabled(!form.username.is_empty(), egui::Button::new(t(Msg::BtnConnectSmall))).clicked() {
                         submitted = true;
                     }
                 });
@@ -1064,14 +1061,14 @@ impl PorteroApp {
                 ui.colored_label(theme::DANGER, &message);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Reintentar").clicked() {
+                    if ui.button(t(Msg::BtnRetry)).clicked() {
                         retry_requested = true;
                     }
-                    if can_forget_credentials && ui.button("Olvidar credenciales").clicked() {
+                    if can_forget_credentials && ui.button(t(Msg::BtnForgetCredentials)).clicked() {
                         forget_requested = true;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Cerrar").clicked() {
+                        if ui.button(t(Msg::BtnClose)).clicked() {
                             close_requested = true;
                         }
                     });
@@ -1107,31 +1104,31 @@ impl PorteroApp {
         let mut confirmed = false;
         let mut cancelled = false;
 
-        egui::Window::new("Importar perfil .ovpn").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-            ui.label(format!("Archivo: {}", draft.source_path.display()));
+        egui::Window::new(t(Msg::ImportTitle)).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+            ui.label(i18n::file_label(&draft.source_path.display().to_string()));
             ui.horizontal(|ui| {
-                ui.label("Nombre:");
+                ui.label(t(Msg::FieldName));
                 ui.text_edit_singleline(&mut draft.display_name);
             });
-            ui.checkbox(&mut draft.remember_credentials, "Recordar credenciales para este perfil");
+            ui.checkbox(&mut draft.remember_credentials, t(Msg::RememberForProfile));
 
             if draft.remember_credentials {
                 ui.horizontal(|ui| {
-                    ui.label("Usuario:");
+                    ui.label(t(Msg::FieldUsername));
                     ui.text_edit_singleline(&mut draft.username);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Contrasena:");
+                    ui.label(t(Msg::FieldPassword));
                     ui.add(egui::TextEdit::singleline(&mut draft.password).password(true));
                 });
             }
 
             let can_import = !draft.remember_credentials || (!draft.username.is_empty() && !draft.password.is_empty());
             ui.horizontal(|ui| {
-                if ui.add_enabled(can_import, egui::Button::new("Importar")).clicked() {
+                if ui.add_enabled(can_import, egui::Button::new(t(Msg::BtnImport))).clicked() {
                     confirmed = true;
                 }
-                if ui.button("Cancelar").clicked() {
+                if ui.button(t(Msg::BtnCancel)).clicked() {
                     cancelled = true;
                 }
             });
@@ -1144,9 +1141,9 @@ impl PorteroApp {
                     if draft.remember_credentials {
                         let creds = Credentials { username: draft.username, password: draft.password };
                         if let Err(e) = credentials::save_for_profile(&mut meta, &creds) {
-                            self.import_error = Some(format!("Perfil importado, pero no se pudieron guardar las credenciales: {e}"));
+                            self.import_error = Some(i18n::imported_but_credentials_failed(&e.to_string()));
                         } else if let Err(e) = storage::save_profile_meta(&meta) {
-                            self.import_error = Some(format!("Perfil importado, pero no se pudieron guardar las credenciales: {e}"));
+                            self.import_error = Some(i18n::imported_but_credentials_failed(&e.to_string()));
                         } else {
                             self.import_error = None;
                         }
@@ -1157,7 +1154,7 @@ impl PorteroApp {
                     self.profiles.push(meta);
                     self.profiles.sort_by(|a, b| a.display_name.cmp(&b.display_name));
                 }
-                Err(e) => self.import_error = Some(format!("No se pudo importar el perfil: {e}")),
+                Err(e) => self.import_error = Some(i18n::could_not_import_profile(&e.to_string())),
             }
         } else if cancelled || !open {
             self.import_draft = None;
@@ -1170,20 +1167,20 @@ impl PorteroApp {
         let mut confirmed = false;
         let mut cancelled = false;
 
-        egui::Window::new("Editar conexion").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+        egui::Window::new(t(Msg::EditTitle)).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Nombre:");
+                ui.label(t(Msg::FieldName));
                 ui.text_edit_singleline(&mut draft.display_name);
             });
-            ui.checkbox(&mut draft.remember_credentials, "Recordar credenciales para este perfil");
+            ui.checkbox(&mut draft.remember_credentials, t(Msg::RememberForProfile));
 
             if draft.remember_credentials {
                 ui.horizontal(|ui| {
-                    ui.label("Usuario:");
+                    ui.label(t(Msg::FieldUsername));
                     ui.text_edit_singleline(&mut draft.username);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Contrasena:");
+                    ui.label(t(Msg::FieldPassword));
                     ui.add(egui::TextEdit::singleline(&mut draft.password).password(true));
                 });
             }
@@ -1191,10 +1188,10 @@ impl PorteroApp {
             let can_save = !draft.display_name.trim().is_empty()
                 && (!draft.remember_credentials || (!draft.username.is_empty() && !draft.password.is_empty()));
             ui.horizontal(|ui| {
-                if ui.add_enabled(can_save, egui::Button::new("Guardar")).clicked() {
+                if ui.add_enabled(can_save, egui::Button::new(t(Msg::BtnSave))).clicked() {
                     confirmed = true;
                 }
-                if ui.button("Cancelar").clicked() {
+                if ui.button(t(Msg::BtnCancel)).clicked() {
                     cancelled = true;
                 }
             });
@@ -1208,7 +1205,7 @@ impl PorteroApp {
                     if draft.remember_credentials {
                         let creds = Credentials { username: draft.username, password: draft.password };
                         if let Err(e) = credentials::save_for_profile(&mut meta, &creds) {
-                            self.edit_error = Some(format!("No se pudieron guardar las credenciales: {e}"));
+                            self.edit_error = Some(i18n::could_not_save_credentials(&e.to_string()));
                             return;
                         }
                     } else {
@@ -1216,7 +1213,7 @@ impl PorteroApp {
                     }
 
                     if let Err(e) = storage::save_profile_meta(&meta) {
-                        self.edit_error = Some(format!("No se pudo guardar el perfil: {e}"));
+                        self.edit_error = Some(i18n::could_not_save_profile(&e.to_string()));
                         return;
                     }
 
@@ -1226,7 +1223,7 @@ impl PorteroApp {
                     self.profiles.sort_by(|a, b| a.display_name.cmp(&b.display_name));
                     self.edit_error = None;
                 }
-                Err(e) => self.edit_error = Some(format!("No se pudo cargar el perfil: {e}")),
+                Err(e) => self.edit_error = Some(i18n::could_not_load_profile(&e.to_string())),
             }
         } else if cancelled || !open {
             self.edit_draft = None;
@@ -1235,18 +1232,18 @@ impl PorteroApp {
 
     fn render_log_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_log_window;
-        egui::Window::new("Log de conexion").open(&mut open).default_height(400.0).show(ctx, |ui| {
+        egui::Window::new(t(Msg::LogWindowTitle)).open(&mut open).default_height(400.0).show(ctx, |ui| {
             let Some(active) = &self.active else {
-                ui.label("No hay ninguna conexion activa.");
+                ui.label(t(Msg::NoActiveConn));
                 return;
             };
 
             ui.horizontal(|ui| {
-                if ui.button("Copiar todo").clicked() {
+                if ui.button(t(Msg::BtnCopyAll)).clicked() {
                     let all_text: String = active.log_lines.iter().cloned().collect::<Vec<_>>().join("\n");
                     ui.ctx().copy_text(all_text);
                 }
-                if ui.button("Abrir carpeta de logs").clicked() {
+                if ui.button(t(Msg::BtnOpenLogsDir)).clicked() {
                     let _ = std::process::Command::new("explorer").arg(storage::connection_logs_dir()).spawn();
                 }
             });
@@ -1265,8 +1262,8 @@ impl PorteroApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(40.0);
-                ui.heading("Bienvenido a Portero VPN");
-                ui.label("Antes de continuar, define la contrasena que protegera la seccion de Configuracion.");
+                ui.heading(t(Msg::WelcomeTitle));
+                ui.label(t(Msg::WelcomeBody));
                 ui.add_space(16.0);
             });
 
@@ -1276,11 +1273,11 @@ impl PorteroApp {
             ui.vertical_centered(|ui| {
                 ui.set_max_width(320.0);
                 ui.horizontal(|ui| {
-                    ui.label("Contrasena:");
+                    ui.label(t(Msg::FieldPassword));
                     ui.add(egui::TextEdit::singleline(&mut state.password).password(true));
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Confirmar:  ");
+                    ui.label(t(Msg::FieldConfirmPadded));
                     ui.add(egui::TextEdit::singleline(&mut state.confirm).password(true));
                 });
 
@@ -1288,18 +1285,18 @@ impl PorteroApp {
                     ui.colored_label(theme::DANGER, error);
                 }
 
-                if ui.button("Definir contrasena").clicked() {
+                if ui.button(t(Msg::BtnDefinePassword)).clicked() {
                     if state.password.len() < 8 {
-                        state.error = Some("La contrasena debe tener al menos 8 caracteres.".into());
+                        state.error = Some(t(Msg::ErrPasswordTooShort).to_string());
                     } else if state.password != state.confirm {
-                        state.error = Some("Las contrasenas no coinciden.".into());
+                        state.error = Some(t(Msg::ErrPasswordsDiffer).to_string());
                     } else {
                         match auth::hash_password(&state.password) {
                             Ok(hash) => match storage::write_config_password_hash(&hash) {
                                 Ok(()) => password_defined = true,
-                                Err(e) => state.error = Some(format!("No se pudo guardar la contrasena: {e}")),
+                                Err(e) => state.error = Some(i18n::could_not_save_password(&e.to_string())),
                             },
-                            Err(_) => state.error = Some("No se pudo generar el hash de la contrasena.".into()),
+                            Err(_) => state.error = Some(t(Msg::ErrPasswordHash).to_string()),
                         }
                     }
                 }
@@ -1315,8 +1312,8 @@ impl PorteroApp {
         if !self.settings_unlocked {
             ui.vertical_centered(|ui| {
                 ui.add_space(24.0);
-                ui.heading("Configuracion protegida");
-                ui.label("Introduce la contrasena de configuracion para continuar.");
+                ui.heading(t(Msg::SettingsLockedTitle));
+                ui.label(t(Msg::SettingsLockedBody));
                 ui.add_space(12.0);
                 ui.set_max_width(320.0);
                 let password_field = ui.add(egui::TextEdit::singleline(&mut self.settings_password_input).password(true));
@@ -1327,16 +1324,16 @@ impl PorteroApp {
                     ui.colored_label(theme::DANGER, error);
                 }
 
-                if ui.button("Entrar").clicked() || submitted_with_enter {
+                if ui.button(t(Msg::BtnEnter)).clicked() || submitted_with_enter {
                     match storage::read_config_password_hash() {
                         Ok(Some(hash)) => match auth::verify_password(&self.settings_password_input, &hash) {
                             Ok(()) => {
                                 self.settings_unlocked = true;
                                 self.settings_error = None;
                             }
-                            Err(_) => self.settings_error = Some("Contrasena incorrecta.".into()),
+                            Err(_) => self.settings_error = Some(t(Msg::ErrWrongPassword).to_string()),
                         },
-                        _ => self.settings_error = Some("No hay contrasena de configuracion definida.".into()),
+                        _ => self.settings_error = Some(t(Msg::ErrNoPasswordSet).to_string()),
                     }
                     self.settings_password_input.clear();
                 }
@@ -1349,17 +1346,37 @@ impl PorteroApp {
         // ~540px de alto de la ventana compacta y sin resize; con scroll en
         // vez de dejar que se recorte contra el borde.
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.heading("General");
+            ui.heading(t(Msg::SettingsGeneral));
             if ui
-                .checkbox(&mut self.preferences.minimize_on_connect, "Minimizar el panel al conectar correctamente")
+                .checkbox(&mut self.preferences.minimize_on_connect, t(Msg::MinimizeOnConnect))
                 .changed()
             {
                 let _ = storage::save_preferences(&self.preferences);
             }
+
+            // El idioma se aplica en el acto: `i18n::set_current` escribe el
+            // atomico global y egui repinta en el siguiente frame, asi que
+            // esta misma pantalla ya se ve traducida sin reiniciar nada.
+            ui.horizontal(|ui| {
+                ui.label(t(Msg::FieldLanguage));
+                let mut selected = self.preferences.language;
+                egui::ComboBox::from_id_salt("language_selector")
+                    .selected_text(selected.native_name())
+                    .show_ui(ui, |ui| {
+                        for lang in Lang::ALL {
+                            ui.selectable_value(&mut selected, lang, lang.native_name());
+                        }
+                    });
+                if selected != self.preferences.language {
+                    self.preferences.language = selected;
+                    i18n::set_current(selected);
+                    let _ = storage::save_preferences(&self.preferences);
+                }
+            });
             ui.separator();
 
-            ui.heading("Comprobaciones de seguridad");
-            ui.label("Marca que comprobaciones deben cumplirse para poder conectar.");
+            ui.heading(t(Msg::SecurityChecksHeading));
+            ui.label(t(Msg::ChecksIntro));
             ui.separator();
 
             let mut policy_changed = false;
@@ -1381,7 +1398,7 @@ impl PorteroApp {
                     // checks si en el futuro hace falta un check
                     // opcional/no bloqueante.
                     ui.horizontal(|ui| {
-                        ui.add(egui::Label::new(RichText::new(check.display_name()).strong()).truncate());
+                        ui.add(egui::Label::new(RichText::new(t(check.display_name())).strong()).truncate());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.checkbox(&mut config.enabled, "").changed() {
                                 config.mandatory = config.enabled;
@@ -1396,15 +1413,15 @@ impl PorteroApp {
             }
 
             ui.separator();
-            ui.collapsing("Cambiar contrasena de configuracion", |ui| {
+            ui.collapsing(t(Msg::ChangePasswordSection), |ui| {
                 let state = &mut self.change_password;
                 let label_width = 70.0;
                 ui.horizontal(|ui| {
-                    ui.add_sized([label_width, ui.spacing().interact_size.y], egui::Label::new("Actual:"));
+                    ui.add_sized([label_width, ui.spacing().interact_size.y], egui::Label::new(t(Msg::FieldCurrent)));
                     ui.add(egui::TextEdit::singleline(&mut state.current).password(true).desired_width(f32::INFINITY));
                 });
                 ui.horizontal(|ui| {
-                    ui.add_sized([label_width, ui.spacing().interact_size.y], egui::Label::new("Nueva:"));
+                    ui.add_sized([label_width, ui.spacing().interact_size.y], egui::Label::new(t(Msg::FieldNew)));
                     ui.add(
                         egui::TextEdit::singleline(&mut state.new_password)
                             .password(true)
@@ -1412,26 +1429,26 @@ impl PorteroApp {
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.add_sized([label_width, ui.spacing().interact_size.y], egui::Label::new("Confirmar:"));
+                    ui.add_sized([label_width, ui.spacing().interact_size.y], egui::Label::new(t(Msg::FieldConfirm)));
                     ui.add(egui::TextEdit::singleline(&mut state.confirm).password(true).desired_width(f32::INFINITY));
                 });
                 if let Some(error) = &state.error {
                     ui.colored_label(theme::DANGER, error);
                 }
-                if ui.add(egui::Button::new("Guardar nueva contrasena").min_size(egui::vec2(ui.available_width(), 0.0))).clicked()
+                if ui.add(egui::Button::new(t(Msg::BtnSaveNewPassword)).min_size(egui::vec2(ui.available_width(), 0.0))).clicked()
                 {
                     match storage::read_config_password_hash() {
                         Ok(Some(hash)) if auth::verify_password(&state.current, &hash).is_ok() => {
                             if state.new_password.len() < 8 {
-                                state.error = Some("La nueva contrasena debe tener al menos 8 caracteres.".into());
+                                state.error = Some(t(Msg::ErrNewPasswordTooShort).to_string());
                             } else if state.new_password != state.confirm {
-                                state.error = Some("Las contrasenas no coinciden.".into());
+                                state.error = Some(t(Msg::ErrPasswordsDiffer).to_string());
                             } else if let Ok(new_hash) = auth::hash_password(&state.new_password) {
                                 let _ = storage::write_config_password_hash(&new_hash);
                                 *state = ChangePasswordState::default();
                             }
                         }
-                        _ => state.error = Some("La contrasena actual no es correcta.".into()),
+                        _ => state.error = Some(t(Msg::ErrCurrentPasswordWrong).to_string()),
                     }
                 }
             });
@@ -1445,26 +1462,22 @@ impl PorteroApp {
     /// requiere elevacion, asi que cada boton lanza el propio ejecutable del
     /// servicio con `runas` y espera a que termine (ver `service_ctl`).
     fn render_service_control(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Servicio del sistema (PorteroVPNSvc)");
+        ui.heading(t(Msg::ServiceHeading));
 
         let (status_color, status_text) = match self.service_state {
-            ServiceInstallState::NotInstalled => (theme::WARNING, "No instalado"),
-            ServiceInstallState::Stopped => (theme::WARNING, "Instalado, detenido"),
-            ServiceInstallState::Running => (theme::SUCCESS, "Instalado y en ejecucion"),
-            ServiceInstallState::Transitioning => (theme::WARNING, "Cambiando de estado..."),
+            ServiceInstallState::NotInstalled => (theme::WARNING, t(Msg::ServiceNotInstalled)),
+            ServiceInstallState::Stopped => (theme::WARNING, t(Msg::ServiceStopped)),
+            ServiceInstallState::Running => (theme::SUCCESS, t(Msg::ServiceRunning)),
+            ServiceInstallState::Transitioning => (theme::WARNING, t(Msg::ServiceTransitioning)),
         };
         ui.horizontal(|ui| {
-            ui.label("Estado:");
+            ui.label(t(Msg::FieldStatus));
             ui.colored_label(status_color, status_text);
-            if ui.small_button("Actualizar").clicked() {
+            if ui.small_button(t(Msg::BtnRefresh)).clicked() {
                 self.refresh_service_status();
             }
         });
-        ui.label(
-            "Este servicio es el unico componente que corre con privilegios de administrador: \
-             solo arranca y detiene openvpn.exe cuando la GUI se lo pide. Instalarlo, reinstalarlo o \
-             quitarlo pide confirmacion de administrador (UAC) cada vez.",
-        );
+        ui.label(t(Msg::ServiceExplanation));
 
         if let Some(error) = &self.service_action_error {
             ui.colored_label(theme::DANGER, error);
@@ -1476,13 +1489,13 @@ impl PorteroApp {
         // de pasar a una segunda linea.
         ui.horizontal_wrapped(|ui| {
             let not_installed = self.service_state == ServiceInstallState::NotInstalled;
-            if ui.add_enabled(not_installed, egui::Button::new("Instalar")).clicked() {
+            if ui.add_enabled(not_installed, egui::Button::new(t(Msg::BtnInstall))).clicked() {
                 self.run_service_action("install");
             }
-            if ui.add_enabled(!not_installed, egui::Button::new("Reinstalar")).clicked() {
+            if ui.add_enabled(!not_installed, egui::Button::new(t(Msg::BtnReinstall))).clicked() {
                 self.run_service_action("reinstall");
             }
-            if ui.add_enabled(!not_installed, egui::Button::new("Desinstalar")).clicked() {
+            if ui.add_enabled(!not_installed, egui::Button::new(t(Msg::BtnUninstall))).clicked() {
                 self.run_service_action("uninstall");
             }
         });

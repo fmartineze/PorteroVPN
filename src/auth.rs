@@ -50,6 +50,30 @@ mod tests {
         assert!(matches!(verify_password("otra-cosa", &hash), Err(AuthError::WrongPassword)));
     }
 
+    /// La contrasena vacia es el caso que mas dano haria si colase: es lo que
+    /// hay en el campo cuando alguien pulsa "Entrar" sin escribir nada.
+    #[test]
+    fn empty_password_is_rejected() {
+        let hash = hash_password("correcto-caballo-bateria-grapadora").unwrap();
+        assert!(matches!(verify_password("", &hash), Err(AuthError::WrongPassword)));
+    }
+
+    /// Comprueba la contrasena vacia contra el hash REAL de esta maquina, no
+    /// contra uno de laboratorio. Solo corre a mano
+    /// (`cargo test -- --ignored`) porque depende de que exista
+    /// `%ProgramData%\PorteroVPN\config-password.hash`.
+    #[test]
+    #[ignore = "depende del config-password.hash real de la maquina"]
+    fn empty_password_is_rejected_by_the_real_stored_hash() {
+        let path = crate::storage::config_password_hash_path();
+        let stored = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("no se pudo leer {}: {e}", path.display()));
+        assert!(
+            matches!(verify_password("", stored.trim()), Err(AuthError::WrongPassword)),
+            "el hash almacenado acepta la contrasena vacia"
+        );
+    }
+
     #[test]
     fn same_password_produces_different_hashes_due_to_salt() {
         let a = hash_password("misma-contrasena").unwrap();

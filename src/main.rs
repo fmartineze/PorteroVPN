@@ -9,6 +9,7 @@ mod connection;
 mod credentials;
 mod elevate;
 mod gpu_fallback;
+mod i18n;
 mod mgmt;
 mod openvpn_install;
 mod service_ctl;
@@ -42,6 +43,15 @@ fn main() -> eframe::Result<()> {
     if let Err(e) = storage::ensure_data_dirs() {
         tracing::error!("no se pudo preparar el almacen de datos: {e}");
     }
+
+    // Antes de pintar nada. En el primer arranque `load_preferences` crea el
+    // fichero resolviendo el idioma contra el de Windows (ver
+    // `AppPreferences::bootstrap_default`); a partir de ahi manda lo guardado.
+    // Si la carga falla se sigue con el idioma por defecto en vez de abortar:
+    // no poder leer una preferencia no es motivo para dejar al usuario sin
+    // aplicacion.
+    let language = storage::load_preferences().map(|p| p.language).unwrap_or_default();
+    i18n::set_current(language);
 
     // Ventana compacta y de tamano fijo (widget, no aplicacion de escritorio
     // clasica): sin boton de maximizar ni borde de redimensionado.

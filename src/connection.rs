@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::checks::{run_pre_connect_checks, CheckContext, CheckOutcome, CheckRegistry, CheckRunResult, WmiDataSource};
 use crate::credentials::Credentials;
+use crate::i18n::{self, t, Msg};
 use crate::mgmt::protocol::{ConnectionStatus, ConnectionTracker, ManagementEvent};
 use crate::mgmt::ManagementClient;
 use crate::storage::{self, ProfileMeta, SecurityPolicy};
@@ -167,9 +168,9 @@ async fn run_connection(
         let (mut client, pid, passfile_path, mut tracker, first_status) = loop {
             attempt += 1;
             let last_state = if attempt == 1 {
-                "STARTING".to_string()
+                t(Msg::ConnStarting).to_string()
             } else {
-                format!("REINTENTANDO ({attempt}/{MAX_CONNECT_ATTEMPTS})")
+                i18n::retrying(attempt, MAX_CONNECT_ATTEMPTS)
             };
             let _ = events.send(AppEvent::Connecting { last_state });
 
@@ -185,8 +186,9 @@ async fn run_connection(
                     continue;
                 }
                 Err(AttemptError::Stalled(msg)) => {
-                    let _ = events.send(AppEvent::Error(format!(
-                        "no se pudo completar la conexion tras {MAX_CONNECT_ATTEMPTS} intentos: {msg}"
+                    let _ = events.send(AppEvent::Error(i18n::could_not_connect_after_attempts(
+                        MAX_CONNECT_ATTEMPTS,
+                        &msg,
                     )));
                     return;
                 }
@@ -280,10 +282,9 @@ async fn run_connection(
                 "fallo de autenticacion, reintentando automaticamente con las mismas credenciales"
             );
             let _ = events.send(AppEvent::Connecting {
-                last_state: format!(
-                    "Reintentando autenticacion ({}/{})",
+                last_state: i18n::retrying_auth(
                     AUTH_FAILED_MAX_RETRIES - auth_retries_left,
-                    AUTH_FAILED_MAX_RETRIES
+                    AUTH_FAILED_MAX_RETRIES,
                 ),
             });
             tokio::time::sleep(AUTH_FAILED_RETRY_DELAY).await;
@@ -435,7 +436,7 @@ async fn start_one_attempt(
     let mgmt_port = pick_management_port().await.map_err(|e| AttemptError::Fatal(e.to_string()))?;
 
     let (passfile_path, passfile_secret) =
-        generate_passfile().map_err(|e| AttemptError::Fatal(format!("no se pudo preparar la conexion: {e}")))?;
+        generate_passfile().map_err(|e| AttemptError::Fatal(i18n::could_not_prepare_connection(&e.to_string())))?;
 
     let pid = match SvcClient::start_profile(
         &profile.stored_ovpn_path.to_string_lossy(),
@@ -462,7 +463,7 @@ async fn start_one_attempt(
             tracing::warn!(error = %e, "no se pudo completar el handshake con la management interface");
             let _ = SvcClient::stop_profile(pid).await;
             let _ = std::fs::remove_file(&passfile_path);
-            return Err(AttemptError::Stalled(format!("no se pudo hablar con openvpn.exe: {e}")));
+            return Err(AttemptError::Stalled(i18n::could_not_talk_to_openvpn(&e.to_string())));
         }
     };
     tracing::info!("conectados a la management interface, activando notificaciones");
@@ -496,7 +497,7 @@ async fn start_one_attempt(
             tracing::warn!(mgmt_port, "intento colgado: sin eventos con significado tras el hold release");
             let _ = SvcClient::stop_profile(pid).await;
             let _ = std::fs::remove_file(&passfile_path);
-            return Err(AttemptError::Stalled("openvpn.exe no respondio tras el hold release".to_string()));
+            return Err(AttemptError::Stalled(t(Msg::ErrOpenVpnNoResponseAfterHold).to_string()));
         }
 
         tokio::select! {
@@ -518,7 +519,7 @@ async fn start_one_attempt(
                     }
                     Ok(Ok(None)) => {
                         let _ = std::fs::remove_file(&passfile_path);
-                        return Err(AttemptError::Stalled("openvpn.exe cerro la conexion durante el arranque".to_string()));
+                        return Err(AttemptError::Stalled(t(Msg::ErrOpenVpnClosedDuringStartup).to_string()));
                     }
                     Ok(Err(e)) => {
                         let _ = SvcClient::stop_profile(pid).await;
@@ -573,7 +574,17 @@ async fn send_paced(
                 // "STARTING" pese a que la VPN llegaba a funcionar. Tratarlo
                 // como fallo de este intento para que se reintente desde
                 // cero es mas seguro que asumir que "ya se recupera solo".
-                if let ManagementEvent::Error(msg) = &ev {
+                // `AuthVerificationFailed` viajaba antes dentro de `Error`, asi
+                // que entraba por aqui: se sigue tratando igual para no cambiar
+                // el comportamiento descrito arriba.
+                let unexpected = match &ev {
+                    ManagementEvent::Error(msg) => Some(msg.clone()),
+                    ManagementEvent::AuthVerificationFailed { context } => {
+                        Some(format!("verificacion de credenciales fallida para '{context}'"))
+                    }
+                    _ => None,
+                };
+                if let Some(msg) = unexpected {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("respuesta inesperada de openvpn.exe a '{cmd}': {msg}"),
@@ -581,7 +592,7 @@ async fn send_paced(
                 }
             }
             Ok(Ok(None)) => {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "openvpn.exe cerro la conexion"));
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, t(Msg::ErrOpenVpnClosedConnection)));
             }
             Ok(Err(e)) => return Err(e),
             // Ventana de silencio: se considera la respuesta a este comando
@@ -642,9 +653,9 @@ fn open_connection_log_file(profile_id: Uuid) -> Option<File> {
 
 fn outcome_reason(outcome: &CheckOutcome) -> String {
     match outcome {
-        CheckOutcome::Pass => "ok".to_string(),
+        CheckOutcome::Pass => t(Msg::OutcomeOk).to_string(),
         CheckOutcome::Fail { reason } => reason.clone(),
-        CheckOutcome::Indeterminate { reason } => format!("no se pudo comprobar ({reason})"),
+        CheckOutcome::Indeterminate { reason } => i18n::could_not_check(reason),
     }
 }
 

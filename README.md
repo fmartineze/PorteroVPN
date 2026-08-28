@@ -12,6 +12,7 @@ Si el antivirus está desactivado, el túnel no se levanta.
 [![Licencia](https://img.shields.io/badge/licencia-Apache%202.0-2d7d9a?style=for-the-badge)](LICENSE)
 [![Plataforma](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?style=for-the-badge&logo=windows&logoColor=white)](#instalación)
 ![Rust](https://img.shields.io/badge/Rust-1.96-b7410e?style=for-the-badge&logo=rust&logoColor=white)
+[![Idiomas](https://img.shields.io/badge/idiomas-ES%20%7C%20EN-7a5ba6?style=for-the-badge)](#configuración)
 [![Versión](https://img.shields.io/badge/versión-0.1.0-6c8e3a?style=for-the-badge)](https://github.com/fmartineze/PorteroVPN/releases)
 
 <br>
@@ -66,6 +67,10 @@ instalación.
 **3.** El instalador copia la aplicación, registra el servicio `PorteroVPNSvc` y
 lo arranca. Listo.
 
+Tanto el instalador como la aplicación se muestran en **español o inglés** según
+el idioma de Windows, sin preguntar nada. El idioma de la aplicación se puede
+cambiar después desde [Configuración](#configuración).
+
 No hace falta instalar OpenVPN a mano: la propia aplicación detecta si falta y
 ofrece descargarlo e instalarlo desde la pantalla de Conexiones.
 
@@ -115,6 +120,7 @@ El icono del engranaje abre la sección protegida, que pide la contraseña. Desd
 ahí se puede:
 
 - Activar o desactivar cada comprobación y marcarla como obligatoria.
+- Cambiar el **idioma** de la aplicación.
 - Minimizar el panel automáticamente al conectar.
 - Cambiar la contraseña de Configuración.
 - Instalar, reinstalar o desinstalar el servicio `PorteroVPNSvc`.

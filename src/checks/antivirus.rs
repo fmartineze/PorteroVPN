@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use wmi::{COMLibrary, WMIConnection};
 
+use crate::i18n::{t, Msg};
 use super::{Check, CheckContext, CheckOutcome, RetryPolicy, WmiDataSource, WmiError};
 
 const SECURITY_CENTER_NAMESPACE: &str = r"root\SecurityCenter2";
@@ -109,18 +110,14 @@ impl Check for AntivirusActiveCheck {
         "defender_realtime_protection"
     }
 
-    fn display_name(&self) -> &'static str {
-        "Antivirus activo (Centro de seguridad de Windows)"
+    fn display_name(&self) -> Msg {
+        Msg::CheckAntivirusName
     }
 
     async fn evaluate(&self, ctx: &CheckContext) -> CheckOutcome {
         match ctx.wmi.antivirus_status().await {
             Ok(status) if status.real_time_protection_enabled => CheckOutcome::Pass,
-            Ok(_) => CheckOutcome::Fail {
-                reason: "Se requiere tener Antivirus activo para poder conectar. Si acabas de reactivarlo, \
-                         espera unos segundos: Windows puede tardar en reflejar el cambio."
-                    .into(),
-            },
+            Ok(_) => CheckOutcome::Fail { reason: t(Msg::ReasonAntivirusInactive).to_string() },
             Err(e) => CheckOutcome::Indeterminate { reason: e.to_string() },
         }
     }

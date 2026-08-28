@@ -16,6 +16,7 @@
 
 use async_trait::async_trait;
 
+use crate::i18n::{t, Msg};
 use super::{Check, CheckContext, CheckOutcome};
 
 pub struct BitLockerEnabledCheck;
@@ -26,22 +27,22 @@ impl Check for BitLockerEnabledCheck {
         "bitlocker_enabled"
     }
 
-    fn display_name(&self) -> &'static str {
-        "BitLocker activo en el disco del sistema"
+    fn display_name(&self) -> Msg {
+        Msg::CheckBitLockerName
     }
 
     async fn evaluate(&self, ctx: &CheckContext) -> CheckOutcome {
         match ctx.wmi.bitlocker_status().await {
             Ok(svc_ipc::BitLockerVolumeStatus::Protected) => CheckOutcome::Pass,
             Ok(svc_ipc::BitLockerVolumeStatus::NotProtected) => CheckOutcome::Fail {
-                reason: "Se requiere tener BitLocker activo en el disco del sistema para poder conectar.".into(),
+                reason: t(Msg::ReasonBitLockerOff).to_string(),
             },
             // Namespace ausente (tipico en Windows Home, donde BitLocker no
             // existe como funcion) o sin volumen de arranque reportado: se
             // trata como "no protegido", no como fallo de la comprobacion
             // en si (ver `svc_ipc::BitLockerVolumeStatus::Unavailable`).
             Ok(svc_ipc::BitLockerVolumeStatus::Unavailable) => CheckOutcome::Fail {
-                reason: "BitLocker no esta disponible o no esta configurado en este equipo.".into(),
+                reason: t(Msg::ReasonBitLockerUnavailable).to_string(),
             },
             Err(e) => CheckOutcome::Indeterminate { reason: e.to_string() },
         }

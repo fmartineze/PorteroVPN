@@ -19,6 +19,17 @@ pub enum ManagementEvent {
     Hold(String),
     Success(String),
     Error(String),
+    /// El servidor rechazo las credenciales del contexto dado, via
+    /// `>PASSWORD:Verification Failed:'<context>'`.
+    ///
+    /// Tiene variante propia en vez de viajar dentro de `Error(String)`
+    /// porque `ConnectionTracker::observe` necesita reconocerlo para emitir
+    /// `ConnectionStatus::AuthFailed`. Cuando era un `Error` con texto
+    /// sintetizado, esa deteccion se hacia buscando una subcadena en
+    /// castellano dentro del mensaje -- lo que ataba una decision de control
+    /// al idioma de la interfaz y se habria roto en silencio al traducirla.
+    /// El texto que ve el usuario se compone ahora en la UI.
+    AuthVerificationFailed { context: String },
     /// El servidor pide la contraseña del passfile de management
     /// (`ENTER PASSWORD:`), previa a cualquier otro intercambio.
     EnterPassword,
@@ -112,7 +123,7 @@ fn parse_password(rest: &str) -> ManagementEvent {
 
     match context {
         Some(context) if rest.contains("Verification Failed") => {
-            ManagementEvent::Error(format!("Verificacion de credenciales fallida para '{context}'"))
+            ManagementEvent::AuthVerificationFailed { context }
         }
         Some(context) => ManagementEvent::PasswordRequest { context },
         None => ManagementEvent::Other(format!(">PASSWORD:{rest}")),
@@ -174,9 +185,7 @@ impl ConnectionTracker {
                 Some(ConnectionStatus::NeedsCredentials { context: context.clone() })
             }
             ManagementEvent::Log(log) => self.observe_log(log),
-            ManagementEvent::Error(message) if message.contains("Verificacion de credenciales") => {
-                Some(ConnectionStatus::AuthFailed)
-            }
+            ManagementEvent::AuthVerificationFailed { .. } => Some(ConnectionStatus::AuthFailed),
             _ => None,
         }
     }
@@ -249,11 +258,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_verification_failed_as_error() {
+    fn parses_verification_failed_as_auth_event() {
         assert_eq!(
             parse_line(">PASSWORD:Verification Failed: 'Auth'"),
-            ManagementEvent::Error("Verificacion de credenciales fallida para 'Auth'".into())
+            ManagementEvent::AuthVerificationFailed { context: "Auth".into() }
         );
+    }
+
+    /// El fallo de credenciales debe llegar a la UI por la forma del evento,
+    /// nunca por el texto que lo acompana: ese acoplamiento existio y se
+    /// habria roto en silencio al traducir la interfaz.
+    #[test]
+    fn auth_verification_failed_becomes_auth_failed_status() {
+        let mut tracker = ConnectionTracker::default();
+        let event = ManagementEvent::AuthVerificationFailed { context: "Auth".into() };
+        assert_eq!(tracker.observe(&event), Some(ConnectionStatus::AuthFailed));
     }
 
     #[test]

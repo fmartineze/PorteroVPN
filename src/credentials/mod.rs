@@ -4,6 +4,7 @@
 
 pub mod dpapi;
 
+use crate::i18n::{t, Msg};
 use crate::storage::ProfileMeta;
 
 #[derive(Debug, Clone)]
@@ -16,7 +17,10 @@ pub struct Credentials {
 pub enum CredentialsError {
     #[error(transparent)]
     Dpapi(#[from] dpapi::DpapiError),
-    #[error("formato de credenciales guardadas invalido")]
+    // El texto se resuelve al mostrarlo, no al declararlo: `thiserror` no
+    // admite una expresion en `#[error]`, asi que se implementa a mano solo
+    // esta variante.
+    #[error("{}", t(Msg::ErrStoredCredentialsFormat))]
     InvalidFormat,
 }
 

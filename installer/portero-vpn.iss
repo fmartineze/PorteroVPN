@@ -45,12 +45,34 @@ PrivilegesRequired=admin
 ; instalar/desinstalar, en vez de fallar al intentar sobrescribir el .exe.
 AppMutex=PorteroVPN_SingleInstance_9F1E9E2B-3B7B-4E88-9F1B-6C8E9E7F2B10
 MinVersion=10.0
+; Con dos idiomas declarados, Inno muestra por defecto un dialogo de
+; seleccion antes del asistente. Se desactiva: elige solo segun el idioma
+; de Windows, igual que hace la propia aplicacion en su primer arranque
+; (ver `AppPreferences::bootstrap_default`).
+ShowLanguageDialog=no
 
 [Languages]
+; `Default.isl` es el ingles que trae Inno; el resto viven en Languages\.
+; El orden importa: si el idioma de Windows no casa con ninguno, Inno usa
+; el primero de la lista, asi que el ingles va primero para que cualquier
+; sistema no hispanohablante caiga ahi.
+Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 
+[CustomMessages]
+english.DesktopIcon=Create a desktop shortcut
+spanish.DesktopIcon=Crear un acceso directo en el escritorio
+english.ShortcutsGroup=Shortcuts:
+spanish.ShortcutsGroup=Accesos directos:
+english.UninstallEntry=Uninstall Portero VPN
+spanish.UninstallEntry=Desinstalar Portero VPN
+english.InstallingService=Installing the PorteroVPNSvc service...
+spanish.InstallingService=Instalando el servicio PorteroVPNSvc...
+english.RunApp=Run Portero VPN
+spanish.RunApp=Ejecutar Portero VPN
+
 [Tasks]
-Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; GroupDescription: "Accesos directos:"; Flags: checkedonce
+Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:ShortcutsGroup}"; Flags: checkedonce
 
 [Files]
 Source: "..\target\release\portero-vpn.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -64,7 +86,7 @@ Source: "..\assets\lavapipe\lvp_icd.x86_64.json"; DestDir: "{app}\lavapipe"; Fla
 
 [Icons]
 Name: "{group}\Portero VPN"; Filename: "{app}\portero-vpn.exe"
-Name: "{group}\Desinstalar Portero VPN"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:UninstallEntry}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Portero VPN"; Filename: "{app}\portero-vpn.exe"; Tasks: desktopicon
 
 [Run]
@@ -73,8 +95,8 @@ Name: "{autodesktop}\Portero VPN"; Filename: "{app}\portero-vpn.exe"; Tasks: des
 ; desactivado hasta que el usuario fuera a Configuracion a instalarlo a
 ; mano. `CurStepChanged` (ver [Code]) ya se aseguro de que no quedase un
 ; registro antiguo a medias antes de este paso.
-Filename: "{app}\portero-vpn-svc.exe"; Parameters: "install"; StatusMsg: "Instalando el servicio PorteroVPNSvc..."; Flags: runhidden waituntilterminated
-Filename: "{app}\portero-vpn.exe"; Description: "Ejecutar Portero VPN"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\portero-vpn-svc.exe"; Parameters: "install"; StatusMsg: "{cm:InstallingService}"; Flags: runhidden waituntilterminated
+Filename: "{app}\portero-vpn.exe"; Description: "{cm:RunApp}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; `sc.exe` en vez de `portero-vpn-svc.exe uninstall`: no depende de que el

@@ -26,6 +26,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SetForegroundWindow, ShowWindow, SW_SHOW, WM_CLOSE};
 
+use crate::i18n::{t, Msg};
 use crate::ui::theme;
 
 const PANEL_ID: &str = "panel";
@@ -84,8 +85,8 @@ impl AppTray {
 /// "Cerrar", para distinguirlo de un simple clic en la X.
 pub fn init(quit_requested: Arc<AtomicBool>) -> Option<AppTray> {
     let menu = Menu::new();
-    let panel_item = MenuItem::with_id(PANEL_ID, "Panel", true, None);
-    let quit_item = MenuItem::with_id(QUIT_ID, "Cerrar", true, None);
+    let panel_item = MenuItem::with_id(PANEL_ID, t(Msg::TrayPanel), true, None);
+    let quit_item = MenuItem::with_id(QUIT_ID, t(Msg::TrayQuit), true, None);
     if menu.append(&panel_item).is_err() || menu.append(&quit_item).is_err() {
         tracing::warn!("no se pudo construir el menu del icono de bandeja");
         return None;

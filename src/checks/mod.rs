@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::i18n::Msg;
 use crate::storage::SecurityPolicy;
 
 /// Resultado tipado de una evaluacion.
@@ -64,8 +65,10 @@ pub trait Check: Send + Sync {
     /// Identificador estable, usado en policy.toml (checks[].id) y en logs.
     fn id(&self) -> &'static str;
 
-    /// Nombre para mostrar en la UI.
-    fn display_name(&self) -> &'static str;
+    /// Nombre para mostrar en la UI, como clave de traduccion: el texto se
+    /// resuelve al pintar, no al registrar el check, para que cambiar de
+    /// idioma se refleje tambien en resultados ya calculados.
+    fn display_name(&self) -> Msg;
 
     /// Evaluacion puntual. Debe tener su propio timeout interno razonable
     /// para no colgar el flujo de "conectando...".
@@ -115,7 +118,7 @@ impl Default for CheckRegistry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckRunResult {
     pub check_id: String,
-    pub display_name: String,
+    pub display_name: Msg,
     pub mandatory: bool,
     pub outcome: CheckOutcome,
 }
@@ -161,7 +164,7 @@ pub async fn run_pre_connect_checks(
         let outcome = evaluate_with_retries(check, ctx).await;
         results.push(CheckRunResult {
             check_id: config.id.clone(),
-            display_name: check.display_name().to_string(),
+            display_name: check.display_name(),
             mandatory: config.mandatory,
             outcome,
         });

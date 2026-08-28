@@ -20,6 +20,7 @@ use pgp::types::{Fingerprint, KeyDetails, KeyId, KeyVersion, PublicParams, Signa
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 use crate::elevate;
+use crate::i18n::{self, t, Msg};
 
 const RELEASES_INDEX_URL: &str = "https://build.openvpn.net/downloads/releases/";
 
@@ -110,7 +111,7 @@ pub fn spawn_install() -> tokio::sync::mpsc::UnboundedReceiver<InstallEvent> {
 }
 
 fn run_install(tx: tokio::sync::mpsc::UnboundedSender<InstallEvent>) {
-    let _ = tx.send(InstallEvent::Status("Buscando la ultima version de OpenVPN...".to_string()));
+    let _ = tx.send(InstallEvent::Status(t(Msg::InstallSearching).to_string()));
     let release = match fetch_latest_release() {
         Ok(r) => r,
         Err(e) => {
@@ -119,10 +120,7 @@ fn run_install(tx: tokio::sync::mpsc::UnboundedSender<InstallEvent>) {
         }
     };
 
-    let _ = tx.send(InstallEvent::Status(format!(
-        "Descargando OpenVPN {} y verificando su firma...",
-        release.version_string()
-    )));
+    let _ = tx.send(InstallEvent::Status(i18n::downloading_openvpn(&release.version_string())));
     let dest_dir = std::env::temp_dir().join("PorteroVPN-OpenVPNInstall");
     let msi_path = match download_and_verify(&release, &dest_dir) {
         Ok(p) => p,
@@ -132,9 +130,7 @@ fn run_install(tx: tokio::sync::mpsc::UnboundedSender<InstallEvent>) {
         }
     };
 
-    let _ = tx.send(InstallEvent::Status(
-        "Instalando OpenVPN (te pedira permisos de administrador)...".to_string(),
-    ));
+    let _ = tx.send(InstallEvent::Status(t(Msg::InstallRunningMsi).to_string()));
     let result = install_elevated(&msi_path);
     // Solo queda ocupando espacio una vez instalado (o si fallo la
     // instalacion): la copia verificada no aporta nada mas alla de este
