@@ -48,7 +48,6 @@ is never even attempted, and the user is told exactly which one it was.
 |:--:| --- | --- |
 | 🦠 | Antivirus active (Windows Security Center) | **Enabled and mandatory** |
 | 🧱 | Firewall active (Windows Security Center) | Disabled |
-| 🔑 | The Windows account requires a password | Disabled |
 | 🔒 | BitLocker enabled on the system drive | Disabled |
 
 Each one is toggled separately as **enabled** (it runs and is displayed) and as

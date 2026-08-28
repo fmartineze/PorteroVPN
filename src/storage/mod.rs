@@ -225,7 +225,6 @@ impl SecurityPolicy {
                 CheckConfig { id: "defender_realtime_protection".to_string(), enabled: true, mandatory: true },
                 CheckConfig { id: "bitlocker_enabled".to_string(), enabled: false, mandatory: false },
                 CheckConfig { id: "firewall_enabled".to_string(), enabled: false, mandatory: false },
-                CheckConfig { id: "windows_account_password".to_string(), enabled: false, mandatory: false },
             ],
         }
     }
@@ -424,7 +423,7 @@ mod tests {
             let antivirus = policy.checks.iter().find(|c| c.id == "defender_realtime_protection").unwrap();
             assert!(antivirus.enabled && antivirus.mandatory, "el antivirus debe venir activo y obligatorio");
 
-            for id in ["bitlocker_enabled", "firewall_enabled", "windows_account_password"] {
+            for id in ["bitlocker_enabled", "firewall_enabled"] {
                 let check = policy
                     .checks
                     .iter()

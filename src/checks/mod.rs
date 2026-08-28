@@ -6,7 +6,6 @@
 pub mod antivirus;
 pub mod bitlocker;
 pub mod firewall;
-pub mod windows_password;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -94,7 +93,6 @@ impl CheckRegistry {
         registry.register(Box::new(antivirus::AntivirusActiveCheck));
         registry.register(Box::new(bitlocker::BitLockerEnabledCheck));
         registry.register(Box::new(firewall::FirewallEnabledCheck));
-        registry.register(Box::new(windows_password::WindowsPasswordCheck));
         // Ojo al anadir uno nuevo: no basta con registrarlo aqui. El motor
         // recorre `policy.toml`, no el registro, asi que un check que no
         // figure en la politica no se ejecuta ni aparece en Configuracion.
