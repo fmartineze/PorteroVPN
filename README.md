@@ -12,16 +12,20 @@ Si el antivirus está desactivado, el túnel no se levanta.
 [![Licencia](https://img.shields.io/badge/licencia-Apache%202.0-2d7d9a?style=for-the-badge)](LICENSE)
 [![Plataforma](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?style=for-the-badge&logo=windows&logoColor=white)](#instalación)
 ![Rust](https://img.shields.io/badge/Rust-1.96-b7410e?style=for-the-badge&logo=rust&logoColor=white)
-[![Idiomas](https://img.shields.io/badge/idiomas-ES%20%7C%20EN-7a5ba6?style=for-the-badge)](#configuración)
+[![Idiomas](https://img.shields.io/badge/idiomas-ES%20%7C%20EN-7a5ba6?style=for-the-badge)](#-configuración)
 [![Versión](https://img.shields.io/badge/versión-0.1.0-6c8e3a?style=for-the-badge)](https://github.com/fmartineze/PorteroVPN/releases)
 
 <br>
 
-<img src="docs/screenshots/conexiones.png" width="330" alt="Pantalla de conexiones">
+<img src="docs/screenshots/connections-es.png" width="330" alt="Pantalla de conexiones">
 &nbsp;&nbsp;
-<img src="docs/screenshots/configuracion.png" width="330" alt="Pantalla de configuración">
+<img src="docs/screenshots/settings-en.png" width="330" alt="Pantalla de configuración">
 
 <sub>Conexiones · Configuración protegida por contraseña</sub>
+
+<br><br>
+
+**Español** · [English](README.en.md)
 
 </div>
 
@@ -69,7 +73,7 @@ lo arranca. Listo.
 
 Tanto el instalador como la aplicación se muestran en **español o inglés** según
 el idioma de Windows, sin preguntar nada. El idioma de la aplicación se puede
-cambiar después desde [Configuración](#configuración).
+cambiar después desde [Configuración](#-configuración).
 
 No hace falta instalar OpenVPN a mano: la propia aplicación detecta si falta y
 ofrece descargarlo e instalarlo desde la pantalla de Conexiones.
