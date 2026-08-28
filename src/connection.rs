@@ -176,7 +176,17 @@ async fn run_connection(
 
             match start_one_attempt(&profile, &events, log_file.as_mut(), &mut cancel_rx).await {
                 Ok(ready) => break ready,
-                Err(AttemptError::Cancelled) => return,
+                Err(AttemptError::Cancelled) => {
+                    // Avisar a la UI antes de irse. Sin esto, cancelar
+                    // mientras el intento todavia esta arrancando dejaba la
+                    // conexion pintada como activa para siempre: nadie le
+                    // decia a la UI que ya no habia nada en marcha, asi que
+                    // `active` no se limpiaba nunca. Los caminos `Fatal` y
+                    // `Stalled` de abajo no lo necesitan porque mandan un
+                    // `Error`, y ese modal si limpia el estado al cerrarse.
+                    let _ = events.send(AppEvent::Disconnected);
+                    return;
+                }
                 Err(AttemptError::Fatal(msg)) => {
                     let _ = events.send(AppEvent::Error(msg));
                     return;
@@ -212,6 +222,7 @@ async fn run_connection(
                     &mut client,
                     &mut pending_credentials,
                     &mut credentials_rx,
+                    &mut cancel_rx,
                     log_file.as_mut(),
                     &mut tracker,
                 )
@@ -221,39 +232,46 @@ async fn run_connection(
                 }
                 continue;
             }
-            tokio::select! {
+
+            // El evento se saca del `select!` y se procesa despues, ya fuera:
+            // `handle_status` necesita `cancel_rx` prestado, y dentro de una
+            // rama del select el futuro de `cancel_rx.changed()` sigue vivo,
+            // asi que el prestamo chocaria.
+            let event = tokio::select! {
                 changed = cancel_rx.changed() => {
-                    if changed.is_ok() && *cancel_rx.borrow() {
+                    if changed.is_err() || *cancel_rx.borrow() {
                         break ExitReason::Cancelled;
                     }
+                    continue;
                 }
-                event = client.read_event() => {
-                    tracing::info!(?event, "evento de la management interface");
-                    match event {
-                        Ok(Some(ev)) => {
-                            forward_raw_event(&events, log_file.as_mut(), &ev);
+                event = client.read_event() => event,
+            };
 
-                            let Some(status) = tracker.observe(&ev) else { continue };
-                            if let Some(reason) = handle_status(
-                                status,
-                                &events,
-                                &mut client,
-                                &mut pending_credentials,
-                                &mut credentials_rx,
-                                log_file.as_mut(),
-                                &mut tracker,
-                            )
-                            .await
-                            {
-                                break reason;
-                            }
-                        }
-                        Ok(None) => break ExitReason::Eof,
-                        Err(e) => {
-                            let _ = events.send(AppEvent::Error(e.to_string()));
-                            break ExitReason::Error;
-                        }
+            tracing::info!(?event, "evento de la management interface");
+            match event {
+                Ok(Some(ev)) => {
+                    forward_raw_event(&events, log_file.as_mut(), &ev);
+
+                    let Some(status) = tracker.observe(&ev) else { continue };
+                    if let Some(reason) = handle_status(
+                        status,
+                        &events,
+                        &mut client,
+                        &mut pending_credentials,
+                        &mut credentials_rx,
+                        &mut cancel_rx,
+                        log_file.as_mut(),
+                        &mut tracker,
+                    )
+                    .await
+                    {
+                        break reason;
                     }
+                }
+                Ok(None) => break ExitReason::Eof,
+                Err(e) => {
+                    let _ = events.send(AppEvent::Error(e.to_string()));
+                    break ExitReason::Error;
                 }
             }
         };
@@ -307,12 +325,17 @@ async fn run_connection(
 /// conexion (fallo de auth, certificado, bucle de reconexion...).
 /// Compartido entre el primer estado obtenido en `start_one_attempt` y el
 /// bucle principal para no duplicar esta logica.
+// 8 argumentos, uno por encima del umbral de clippy, por el mismo motivo que
+// en `run_connection`: son extremos de canal y prestamos con ciclos de vida
+// distintos, y agruparlos en un struct solo moveria la lista de sitio.
+#[allow(clippy::too_many_arguments)]
 async fn handle_status(
     mut status: ConnectionStatus,
     events: &mpsc::UnboundedSender<AppEvent>,
     client: &mut ManagementClient,
     pending_credentials: &mut Option<Credentials>,
     credentials_rx: &mut mpsc::Receiver<Credentials>,
+    cancel_rx: &mut watch::Receiver<bool>,
     mut log_file: Option<&mut File>,
     tracker: &mut ConnectionTracker,
 ) -> Option<ExitReason> {
@@ -331,9 +354,33 @@ async fn handle_status(
                     Some(c) => c,
                     None => {
                         let _ = events.send(AppEvent::NeedsCredentials { context: context.clone() });
-                        match credentials_rx.recv().await {
-                            Some(c) => c,
-                            None => return Some(ExitReason::Cancelled),
+
+                        // Esperar las credenciales SIN dejar de escuchar la
+                        // cancelacion. Con un `recv()` a secas, pulsar
+                        // "Cancelar" en el dialogo no llegaba hasta aqui: la
+                        // senal se enviaba, pero esta tarea seguia bloqueada
+                        // en el canal de credenciales y la UI se quedaba en
+                        // "Conectando... (ARRANCANDO)" con openvpn.exe vivo
+                        // hasta que se rendia por su cuenta. El `select` del
+                        // bucle principal no cubre este punto porque mientras
+                        // se ejecuta `handle_status` ese bucle esta parado.
+                        if *cancel_rx.borrow() {
+                            return Some(ExitReason::Cancelled);
+                        }
+                        loop {
+                            tokio::select! {
+                                received = credentials_rx.recv() => match received {
+                                    Some(c) => break c,
+                                    // El otro extremo se solto: la UI ya no
+                                    // puede mandar credenciales.
+                                    None => return Some(ExitReason::Cancelled),
+                                },
+                                changed = cancel_rx.changed() => {
+                                    if changed.is_err() || *cancel_rx.borrow() {
+                                        return Some(ExitReason::Cancelled);
+                                    }
+                                }
+                            }
                         }
                     }
                 };
