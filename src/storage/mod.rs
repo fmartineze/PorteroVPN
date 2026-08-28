@@ -269,11 +269,44 @@ pub struct AppPreferences {
     /// en cada arranque.
     #[serde(default)]
     pub language: crate::i18n::Lang,
+
+    /// Cuantas veces reintentar la conexion entera, sola, cuando el servidor
+    /// rechaza las credenciales, antes de dar el fallo por bueno y avisar al
+    /// usuario. Existe porque un servidor que rechaza de forma intermitente
+    /// unas credenciales validas suele aceptarlas a los pocos segundos sin que
+    /// nadie cambie nada.
+    ///
+    /// `default = "..."` y no `#[serde(default)]` a secas: el `Default` de
+    /// `u32` es 0, que aqui significaria "no reintentar nunca", justo lo
+    /// contrario de lo que hacia la version que no tenia este ajuste.
+    #[serde(default = "default_retry_attempts")]
+    pub retry_attempts: u32,
+
+    /// Segundos de espera entre esos reintentos. Mismo cuidado con el
+    /// `default`: un 0 heredado convertiria los reintentos en una rafaga.
+    #[serde(default = "default_retry_delay_secs")]
+    pub retry_delay_secs: u64,
+}
+
+/// Los valores que tenian las constantes del modulo `connection` antes de que
+/// esto fuera configurable, para que actualizar la app no cambie el
+/// comportamiento de nadie.
+fn default_retry_attempts() -> u32 {
+    3
+}
+
+fn default_retry_delay_secs() -> u64 {
+    3
 }
 
 impl Default for AppPreferences {
     fn default() -> Self {
-        Self { minimize_on_connect: true, language: crate::i18n::Lang::default() }
+        Self {
+            minimize_on_connect: true,
+            language: crate::i18n::Lang::default(),
+            retry_attempts: default_retry_attempts(),
+            retry_delay_secs: default_retry_delay_secs(),
+        }
     }
 }
 
@@ -450,6 +483,33 @@ mod tests {
             let prefs = load_preferences().expect("load_preferences fallo con el formato antiguo");
             assert!(!prefs.minimize_on_connect, "se perdio la preferencia ya guardada");
             assert_eq!(prefs.language, crate::i18n::Lang::default());
+        });
+    }
+
+    /// Los campos de reintento llevan `#[serde(default = "...")]` y no
+    /// `#[serde(default)]` a secas: el `Default` de los enteros es 0, que aqui
+    /// significaria "no reintentar nunca" y "sin espera", cambiando el
+    /// comportamiento a quien solo actualiza la app.
+    #[test]
+    fn retry_settings_fall_back_to_the_previous_hardcoded_values() {
+        with_temp_program_data(|| {
+            ensure_data_dirs().expect("ensure_data_dirs fallo");
+            std::fs::write(preferences_path(), "minimize_on_connect = true\n")
+                .expect("no se pudo escribir el preferences.toml antiguo");
+
+            let prefs = load_preferences().expect("load_preferences fallo");
+            assert_eq!(prefs.retry_attempts, 3, "los reintentos cayeron a 0 al actualizar");
+            assert_eq!(prefs.retry_delay_secs, 3, "la espera entre reintentos cayo a 0 al actualizar");
+        });
+    }
+
+    #[test]
+    fn retry_settings_survive_a_save_and_load_roundtrip() {
+        with_temp_program_data(|| {
+            let updated =
+                AppPreferences { retry_attempts: 7, retry_delay_secs: 12, ..AppPreferences::default() };
+            save_preferences(&updated).expect("save_preferences fallo");
+            assert_eq!(load_preferences().unwrap(), updated);
         });
     }
 }

@@ -417,6 +417,9 @@ impl PorteroApp {
             Arc::clone(&self.registry),
             Arc::clone(&self.wmi),
             stored_credentials,
+            // Se lee al arrancar cada conexion, no una vez al abrir la app:
+            // asi un cambio en Configuracion afecta ya al siguiente intento.
+            (&self.preferences).into(),
         );
 
         self.active = Some(ActiveConnection {
@@ -1432,38 +1435,15 @@ impl PorteroApp {
         // ~540px de alto de la ventana compacta y sin resize; con scroll en
         // vez de dejar que se recorte contra el borde.
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.heading(t(Msg::SettingsGeneral));
-            if ui
-                .checkbox(&mut self.preferences.minimize_on_connect, t(Msg::MinimizeOnConnect))
-                .changed()
-            {
-                let _ = storage::save_preferences(&self.preferences);
-            }
-
-            // El idioma se aplica en el acto: `i18n::set_current` escribe el
-            // atomico global y egui repinta en el siguiente frame, asi que
-            // esta misma pantalla ya se ve traducida sin reiniciar nada.
-            ui.horizontal(|ui| {
-                ui.label(t(Msg::FieldLanguage));
-                let mut selected = self.preferences.language;
-                egui::ComboBox::from_id_salt("language_selector")
-                    .selected_text(selected.native_name())
-                    .show_ui(ui, |ui| {
-                        for lang in Lang::ALL {
-                            ui.selectable_value(&mut selected, lang, lang.native_name());
-                        }
-                    });
-                if selected != self.preferences.language {
-                    self.preferences.language = selected;
-                    i18n::set_current(selected);
-                    let _ = storage::save_preferences(&self.preferences);
-                }
-            });
-            ui.separator();
-
+            // Orden deliberado: las comprobaciones de seguridad son la razon de
+            // ser de la aplicacion, asi que abren la pantalla y son lo unico
+            // que se ve sin desplazarse. Detras van los ajustes de conexion,
+            // luego las preferencias de la aplicacion, y al final lo que casi
+            // nunca se toca (contrasena y servicio), plegado para no alargar
+            // la pantalla.
             ui.heading(t(Msg::SecurityChecksHeading));
             ui.label(t(Msg::ChecksIntro));
-            ui.separator();
+            ui.add_space(4.0);
 
             let mut policy_changed = false;
             for check in self.registry.all() {
@@ -1498,6 +1478,74 @@ impl PorteroApp {
                 let _ = storage::save_policy(&self.policy);
             }
 
+            ui.add_space(6.0);
+            ui.separator();
+
+            ui.heading(t(Msg::SettingsConnection));
+            ui.label(t(Msg::RetryIntro));
+            let mut prefs_changed = false;
+            let label_width = 130.0;
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [label_width, ui.spacing().interact_size.y],
+                    egui::Label::new(t(Msg::FieldRetryAttempts)),
+                );
+                prefs_changed |= ui
+                    .add(egui::DragValue::new(&mut self.preferences.retry_attempts).range(0..=10))
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [label_width, ui.spacing().interact_size.y],
+                    egui::Label::new(t(Msg::FieldRetryDelay)),
+                );
+                prefs_changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut self.preferences.retry_delay_secs)
+                            .range(1..=60)
+                            .suffix(" s"),
+                    )
+                    .changed();
+            });
+            if self.preferences.retry_attempts == 0 {
+                ui.label(RichText::new(t(Msg::RetryDisabledHint)).small().weak());
+            }
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            ui.heading(t(Msg::SettingsApplication));
+            // El idioma se aplica en el acto: `i18n::set_current` escribe el
+            // atomico global y egui repinta en el siguiente frame, asi que
+            // esta misma pantalla ya se ve traducida sin reiniciar nada.
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [label_width, ui.spacing().interact_size.y],
+                    egui::Label::new(t(Msg::FieldLanguage)),
+                );
+                let mut selected = self.preferences.language;
+                egui::ComboBox::from_id_salt("language_selector")
+                    .selected_text(selected.native_name())
+                    .show_ui(ui, |ui| {
+                        for lang in Lang::ALL {
+                            ui.selectable_value(&mut selected, lang, lang.native_name());
+                        }
+                    });
+                if selected != self.preferences.language {
+                    self.preferences.language = selected;
+                    i18n::set_current(selected);
+                    prefs_changed = true;
+                }
+            });
+            prefs_changed |= ui
+                .checkbox(&mut self.preferences.minimize_on_connect, t(Msg::MinimizeOnConnect))
+                .changed();
+
+            if prefs_changed {
+                let _ = storage::save_preferences(&self.preferences);
+            }
+
+            ui.add_space(6.0);
             ui.separator();
             ui.collapsing(t(Msg::ChangePasswordSection), |ui| {
                 let state = &mut self.change_password;
@@ -1539,6 +1587,7 @@ impl PorteroApp {
                 }
             });
 
+            ui.add_space(6.0);
             ui.separator();
             self.render_service_control(ui);
         });
@@ -1563,7 +1612,11 @@ impl PorteroApp {
                 self.refresh_service_status();
             }
         });
-        ui.label(t(Msg::ServiceExplanation));
+        // Atenuado y en pequeno: es un parrafo largo que se lee una vez y
+        // luego solo estorba. A tamano normal competia visualmente con las
+        // comprobaciones de seguridad, que es lo que de verdad importa en esta
+        // pantalla.
+        ui.label(RichText::new(t(Msg::ServiceExplanation)).small().weak());
 
         if let Some(error) = &self.service_action_error {
             ui.colored_label(theme::DANGER, error);

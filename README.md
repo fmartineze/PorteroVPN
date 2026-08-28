@@ -120,6 +120,8 @@ El icono del engranaje abre la sección protegida, que pide la contraseña. Desd
 ahí se puede:
 
 - Activar o desactivar cada comprobación y marcarla como obligatoria.
+- Ajustar cuántas veces se **reintenta** un rechazo de credenciales y cuánto se
+  espera entre intentos (3 y 3 segundos por defecto).
 - Cambiar el **idioma** de la aplicación.
 - Minimizar el panel automáticamente al conectar.
 - Cambiar la contraseña de Configuración.

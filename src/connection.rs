@@ -57,6 +57,7 @@ pub fn spawn_connection(
     registry: Arc<CheckRegistry>,
     wmi: Arc<dyn WmiDataSource>,
     stored_credentials: Option<Credentials>,
+    auth_retry: AuthRetryPolicy,
 ) -> (mpsc::UnboundedReceiver<AppEvent>, ConnectionHandle) {
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     let (credentials_tx, credentials_rx) = mpsc::channel(1);
@@ -68,6 +69,7 @@ pub fn spawn_connection(
         registry,
         wmi,
         stored_credentials,
+        auth_retry,
         events_tx,
         credentials_rx,
         cancel_rx,
@@ -104,16 +106,26 @@ const ATTEMPT_STALL_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_CONNECTION_LOG_FILES: usize = 10;
 
 /// Cuantas veces reintentar una conexion entera (arranque + credenciales)
-/// desde cero cuando el servidor rechaza la autenticacion, antes de dar el
-/// fallo por definitivo y mostrarselo al usuario. Se ha visto en la
-/// practica que el mismo usuario/contrasena, que el servidor VPN rechaza de
-/// forma intermitente, funciona a los pocos segundos sin cambiar nada -- asi
-/// que merece la pena reintentar solo antes de molestar al usuario.
-const AUTH_FAILED_MAX_RETRIES: u32 = 3;
+/// desde cero cuando el servidor rechaza la autenticacion, y cuanto esperar
+/// entre intentos.
+///
+/// Existe porque se ha visto en la practica que el mismo usuario/contrasena,
+/// que el servidor VPN rechaza de forma intermitente, funciona a los pocos
+/// segundos sin cambiar nada -- asi que merece la pena reintentar solo antes
+/// de molestar al usuario. Configurable desde Configuracion; los valores por
+/// defecto (3 intentos, 3 segundos) son los que tenian las constantes que esto
+/// sustituye.
+#[derive(Debug, Clone, Copy)]
+pub struct AuthRetryPolicy {
+    pub attempts: u32,
+    pub delay: Duration,
+}
 
-/// Espera entre cada reintento automatico tras un fallo de autenticacion
-/// (ver `AUTH_FAILED_MAX_RETRIES`).
-const AUTH_FAILED_RETRY_DELAY: Duration = Duration::from_secs(3);
+impl From<&crate::storage::AppPreferences> for AuthRetryPolicy {
+    fn from(prefs: &crate::storage::AppPreferences) -> Self {
+        Self { attempts: prefs.retry_attempts, delay: Duration::from_secs(prefs.retry_delay_secs) }
+    }
+}
 
 // 8 argumentos, uno por encima del umbral de clippy. Agruparlos en un struct
 // de contexto solo moveria la lista de sitio: cada uno tiene un ciclo de vida
@@ -127,6 +139,7 @@ async fn run_connection(
     registry: Arc<CheckRegistry>,
     wmi: Arc<dyn WmiDataSource>,
     stored_credentials: Option<Credentials>,
+    auth_retry: AuthRetryPolicy,
     events: mpsc::UnboundedSender<AppEvent>,
     mut credentials_rx: mpsc::Receiver<Credentials>,
     mut cancel_rx: watch::Receiver<bool>,
@@ -158,10 +171,10 @@ async fn run_connection(
     // Credenciales conocidas para toda la conexion (guardadas o pedidas al
     // usuario la primera vez que hagan falta): se recuerdan aqui, fuera del
     // bucle de abajo, para que un reintento automatico tras un fallo de
-    // autenticacion (ver `AUTH_FAILED_MAX_RETRIES`) pueda reutilizarlas sin
+    // autenticacion (ver `AuthRetryPolicy`) pueda reutilizarlas sin
     // volver a interrumpir al usuario.
     let mut credentials = stored_credentials;
-    let mut auth_retries_left = AUTH_FAILED_MAX_RETRIES;
+    let mut auth_retries_left = auth_retry.attempts;
 
     let exit_reason = 'connection: loop {
         let mut attempt = 0u32;
@@ -301,11 +314,11 @@ async fn run_connection(
             );
             let _ = events.send(AppEvent::Connecting {
                 last_state: i18n::retrying_auth(
-                    AUTH_FAILED_MAX_RETRIES - auth_retries_left,
-                    AUTH_FAILED_MAX_RETRIES,
+                    auth_retry.attempts - auth_retries_left,
+                    auth_retry.attempts,
                 ),
             });
-            tokio::time::sleep(AUTH_FAILED_RETRY_DELAY).await;
+            tokio::time::sleep(auth_retry.delay).await;
             continue 'connection;
         }
 
@@ -389,7 +402,7 @@ async fn handle_status(
                 // recuerda para el resto de la conexion, para no tener que
                 // volver a pedirlas si hace falta un reintento automatico
                 // tras un fallo de autenticacion (ver
-                // `AUTH_FAILED_MAX_RETRIES`).
+                // `AuthRetryPolicy`).
                 *pending_credentials = Some(creds.clone());
 
                 // Espaciados igual que los comandos de arranque (ver
@@ -434,7 +447,7 @@ async fn handle_status(
             ConnectionStatus::AuthFailed => {
                 // `AppEvent::AuthFailed` (el modal de error) no se manda
                 // aqui: `run_connection` decide si reintentar
-                // automaticamente primero (ver `AUTH_FAILED_MAX_RETRIES`) y
+                // automaticamente primero (ver `AuthRetryPolicy`) y
                 // solo lo manda si se agotan los reintentos.
                 return Some(ExitReason::AuthFailed);
             }

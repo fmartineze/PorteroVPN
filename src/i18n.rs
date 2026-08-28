@@ -262,7 +262,7 @@ declare_messages! {
     },
 
     // --- Configuracion -------------------------------------------------
-    SettingsGeneral   => { es: "General", en: "General" },
+    SettingsApplication => { es: "Aplicacion", en: "Application" },
     MinimizeOnConnect => {
         es: "Minimizar el panel al conectar correctamente",
         en: "Minimize the panel on a successful connection"
@@ -271,6 +271,21 @@ declare_messages! {
     ChecksIntro       => {
         es: "Marca que comprobaciones deben cumplirse para poder conectar.",
         en: "Tick which checks must pass before a connection is allowed."
+    },
+
+    // --- Configuracion: reintentos ------------------------------------
+    SettingsConnection => { es: "Conexion", en: "Connection" },
+    RetryIntro         => {
+        es: "Si el servidor rechaza las credenciales, la aplicacion vuelve a \
+             intentarlo sola antes de avisarte.",
+        en: "If the server rejects the credentials, the application retries on \
+             its own before telling you."
+    },
+    FieldRetryAttempts => { es: "Reintentos:",          en: "Retries:" },
+    FieldRetryDelay    => { es: "Espera entre ellos:",  en: "Wait between them:" },
+    RetryDisabledHint  => {
+        es: "Con 0 reintentos, un rechazo de credenciales se avisa al momento.",
+        en: "With 0 retries, a rejected login is reported straight away."
     },
     ChangePasswordSection => {
         es: "Cambiar contrasena de configuracion",

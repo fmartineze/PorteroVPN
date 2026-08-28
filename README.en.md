@@ -119,6 +119,8 @@ The gear icon opens the protected section, which asks for the password. From
 there you can:
 
 - Enable or disable each check and mark it as mandatory.
+- Set how many times a rejected login is **retried** automatically, and how
+  long to wait between retries (3 and 3 seconds by default).
 - Change the application's **language**.
 - Minimise the panel automatically on connect.
 - Change the Settings password.
