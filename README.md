@@ -11,7 +11,7 @@ Si el antivirus está desactivado, el túnel no se levanta.
 
 [![Licencia](https://img.shields.io/badge/licencia-Apache%202.0-2d7d9a?style=for-the-badge)](LICENSE)
 [![Plataforma](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?style=for-the-badge&logo=windows&logoColor=white)](#instalación)
-[![Rust](https://img.shields.io/badge/Rust-1.96-b7410e?style=for-the-badge&logo=rust&logoColor=white)](#desarrollo)
+![Rust](https://img.shields.io/badge/Rust-1.96-b7410e?style=for-the-badge&logo=rust&logoColor=white)
 [![Versión](https://img.shields.io/badge/versión-0.1.0-6c8e3a?style=for-the-badge)](https://github.com/fmartineze/PorteroVPN/releases)
 
 <br>
@@ -59,8 +59,6 @@ relajar la política.
 
 **1.** Descarga `PorteroVPN-Setup.exe` desde
 [**Releases**](https://github.com/fmartineze/PorteroVPN/releases).
-Si todavía no hay ninguna publicada, compílalo tú mismo: ver
-[Desarrollo](#desarrollo).
 
 **2.** Ejecútalo. Pedirá permisos de administrador **una sola vez**, durante la
 instalación.
@@ -123,93 +121,12 @@ ahí se puede:
 
 ---
 
-## Cómo funciona por dentro
-
-Tres componentes, con **separación de privilegios** como decisión central:
-
-| Componente | Privilegios | Responsabilidad |
-| --- | --- | --- |
-| `portero-vpn` | 👤 Usuario normal | Interfaz, comprobaciones, credenciales y control de la conexión |
-| `portero-vpn-svc` | 🔧 LocalSystem | Solo lanza y mata `openvpn.exe` |
-| `svc-ipc` | — | Tipos de mensaje compartidos entre ambos |
-
-La interfaz **nunca corre elevada**. El servicio del sistema es deliberadamente
-mínimo: no interpreta perfiles `.ovpn`, no ve credenciales y no decide política
-de seguridad. Recibe por un named pipe la ruta y el puerto que la interfaz ya ha
-elegido, y ejecuta el proceso. La única excepción es la consulta de BitLocker,
-que vive ahí porque su namespace WMI está restringido a Administradores.
-
-Una vez arrancado OpenVPN, la interfaz habla directamente con su _management
-interface_ por un socket TCP local, autenticándose con un fichero de contraseña
-de un solo uso, para que ningún otro proceso de la máquina pueda tomar el
-control del túnel.
-
-### Seguridad de las credenciales
-
-- **Credenciales VPN** — cifradas con DPAPI ligado al usuario de Windows, con
-  entropía adicional propia de la aplicación. Nunca se guardan en claro, y
-  guardarlas es opcional por perfil.
-- **Contraseña de Configuración** — hash Argon2id con sal por contraseña.
-
-### Dónde se guardan los datos
+## Dónde se guardan los datos
 
 Todo vive en `C:\ProgramData\PorteroVPN\`: los perfiles importados y sus
 metadatos, la política de comprobaciones, las preferencias, y los registros de
 la aplicación y de cada intento de conexión (`logs\`, se conservan los 10
 últimos). **Es el primer sitio donde mirar si algo falla.**
-
----
-
-## Desarrollo
-
-Necesitas Rust estable con el toolchain MSVC (probado con 1.96.0) y, para
-empaquetar, [Inno Setup 6](https://jrsoftware.org/isdl.php).
-
-```powershell
-cargo build --release --workspace
-cargo test --workspace
-```
-
-> [!IMPORTANT]
-> **`cargo build --release` a secas NO sirve.** El paquete raíz es el único
-> `default-member` del workspace, así que sin `--workspace` no se genera
-> `portero-vpn-svc.exe` y el instalador fallará al no encontrarlo.
-
-Algunos tests están marcados `#[ignore]` porque dependen de red real, del
-antivirus de la máquina o de que `PorteroVPNSvc` esté corriendo. Para
-ejecutarlos: `cargo test -- --ignored`.
-
-Para generar el instalador, desde `installer\`:
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" portero-vpn.iss
-```
-
-El resultado queda en `installer\output\PorteroVPN-Setup.exe`.
-
-**Añadir una comprobación nueva** consiste en implementar el trait `Check` y
-registrarla en `CheckRegistry::new()`; aparece sola en la pantalla de
-Configuración.
-
-Los comentarios del código documentan el incidente real que motivó cada
-constante y cada espera aparentemente arbitraria. Merece la pena leerlos antes
-de "simplificar" algo que parezca de más.
-
----
-
-## Limitaciones conocidas
-
-- Una sola conexión activa a la vez.
-- El volumen de arranque se asume `C:` en la consulta de BitLocker.
-- En **Windows Home**, donde BitLocker no existe, la comprobación se resuelve
-  como fallo. Si se marca como obligatoria en un equipo Home, bloquea la
-  conexión sin salida posible para el usuario. Viene desactivada por defecto.
-- `vendor/egui-wgpu-0.29.1` es una copia local parcheada de egui-wgpu 0.29.1
-  (reintenta con `force_fallback_adapter: true`). Al subir de versión de
-  eframe/egui hay que revisar si el parche sigue haciendo falta.
-- `assets/lavapipe/vulkan_lvp.dll` (54 MB) está versionado a propósito: es el
-  driver Vulkan por software que se usa como último recurso en equipos sin
-  ningún backend gráfico utilizable (visto en una VM Win11 sobre Proxmox).
 
 ---
 
