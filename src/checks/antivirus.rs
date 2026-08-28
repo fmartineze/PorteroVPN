@@ -37,6 +37,15 @@ struct RawAntiVirusProduct {
     product_state: u32,
 }
 
+/// `FirewallProduct` vive en el mismo namespace y expone el mismo
+/// `productState` que `AntiVirusProduct`, asi que se decodifica igual (ver
+/// `real_time_protection_enabled`).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawFirewallProduct {
+    product_state: u32,
+}
+
 /// Implementacion real de `WmiDataSource` sobre el crate `wmi` (COM). Las
 /// llamadas COM son sincronas, por lo que se ejecutan en un hilo bloqueante
 /// dedicado (`spawn_blocking`) para no bloquear el runtime de tokio.
@@ -50,12 +59,35 @@ impl WmiDataSource for WindowsWmiDataSource {
             .map_err(|e| WmiError::Query(format!("tarea WMI abortada: {e}")))?
     }
 
+    async fn firewall_status(&self) -> Result<super::firewall::FirewallStatus, WmiError> {
+        tokio::task::spawn_blocking(query_firewall_status)
+            .await
+            .map_err(|e| WmiError::Query(format!("tarea WMI abortada: {e}")))?
+    }
+
     // A diferencia de arriba, esto no consulta WMI en este mismo proceso:
     // viaja por IPC hasta `PorteroVPNSvc` (ver `checks::bitlocker` para el
     // porque).
     async fn bitlocker_status(&self) -> Result<svc_ipc::BitLockerVolumeStatus, WmiError> {
         crate::svc_client::SvcClient::query_bitlocker().await.map_err(|e| WmiError::Query(e.to_string()))
     }
+}
+
+fn query_firewall_status() -> Result<super::firewall::FirewallStatus, WmiError> {
+    let com_con = COMLibrary::new().map_err(|e| WmiError::Query(e.to_string()))?;
+    let wmi_con = WMIConnection::with_namespace_path(SECURITY_CENTER_NAMESPACE, com_con)
+        .map_err(|e| WmiError::Query(e.to_string()))?;
+
+    let results: Vec<RawFirewallProduct> = wmi_con
+        .raw_query("SELECT productState FROM FirewallProduct")
+        .map_err(|e| WmiError::Query(e.to_string()))?;
+
+    // Misma regla que con el antivirus: basta con que UNO de los productos
+    // registrados este activo, y "ninguno registrado" cuenta como inactivo,
+    // no como error.
+    let enabled = results.iter().any(|product| real_time_protection_enabled(product.product_state));
+
+    Ok(super::firewall::FirewallStatus { enabled })
 }
 
 fn query_antivirus_status() -> Result<AntivirusStatus, WmiError> {

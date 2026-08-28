@@ -224,8 +224,36 @@ impl SecurityPolicy {
             checks: vec![
                 CheckConfig { id: "defender_realtime_protection".to_string(), enabled: true, mandatory: true },
                 CheckConfig { id: "bitlocker_enabled".to_string(), enabled: false, mandatory: false },
+                CheckConfig { id: "firewall_enabled".to_string(), enabled: false, mandatory: false },
+                CheckConfig { id: "windows_account_password".to_string(), enabled: false, mandatory: false },
             ],
         }
+    }
+
+    /// Anade una entrada **desactivada** por cada check registrado que todavia
+    /// no figure en la politica, y devuelve si hubo cambios.
+    ///
+    /// Sin esto, un check nuevo seria invisible en cualquier equipo donde la
+    /// aplicacion ya se haya usado: `run_pre_connect_checks` recorre
+    /// `policy.toml`, no el registro, y la pantalla de Configuracion tambien
+    /// se salta los checks que no encuentra en la politica. Como
+    /// `bootstrap_default` solo actua cuando el fichero no existe, actualizar
+    /// la app no bastaria: nadie veria el check ni se ejecutaria, y sin ningun
+    /// aviso.
+    ///
+    /// Se anaden desactivados a proposito: actualizar no debe empezar a
+    /// bloquear conexiones que antes funcionaban. Activarlos es decision del
+    /// administrador.
+    pub fn add_missing_checks<'a>(&mut self, registered_ids: impl IntoIterator<Item = &'a str>) -> bool {
+        let mut changed = false;
+        for id in registered_ids {
+            if self.checks.iter().any(|c| c.id == id) {
+                continue;
+            }
+            self.checks.push(CheckConfig { id: id.to_string(), enabled: false, mandatory: false });
+            changed = true;
+        }
+        changed
     }
 }
 
@@ -383,16 +411,28 @@ mod tests {
         result
     }
 
+    /// Se comprueban las propiedades de cada check, no cuantos hay: un
+    /// recuento exacto obliga a tocar este test cada vez que se anade uno, y
+    /// lo que importa de verdad es que el antivirus llegue activo y todo lo
+    /// demas no.
     #[test]
     fn bootstrap_policy_created_on_first_load() {
         with_temp_program_data(|| {
             let policy = load_policy().expect("load_policy fallo");
-            assert_eq!(policy.checks.len(), 2);
-            let antivirus = policy.checks.iter().find(|c| c.id == "defender_realtime_protection").unwrap();
-            assert!(antivirus.enabled && antivirus.mandatory);
-            let bitlocker = policy.checks.iter().find(|c| c.id == "bitlocker_enabled").unwrap();
-            assert!(!bitlocker.enabled && !bitlocker.mandatory);
             assert!(policy_path().exists());
+
+            let antivirus = policy.checks.iter().find(|c| c.id == "defender_realtime_protection").unwrap();
+            assert!(antivirus.enabled && antivirus.mandatory, "el antivirus debe venir activo y obligatorio");
+
+            for id in ["bitlocker_enabled", "firewall_enabled", "windows_account_password"] {
+                let check = policy
+                    .checks
+                    .iter()
+                    .find(|c| c.id == id)
+                    .unwrap_or_else(|| panic!("falta {id} en la politica de arranque"));
+                assert!(!check.enabled, "{id} no debe venir activado por defecto");
+                assert!(!check.mandatory, "{id} no debe venir como obligatorio por defecto");
+            }
         });
     }
 
@@ -501,6 +541,37 @@ mod tests {
             assert_eq!(prefs.retry_attempts, 3, "los reintentos cayeron a 0 al actualizar");
             assert_eq!(prefs.retry_delay_secs, 3, "la espera entre reintentos cayo a 0 al actualizar");
         });
+    }
+
+    /// Un `policy.toml` de una version anterior no conoce los checks nuevos.
+    /// Tienen que aparecer, desactivados, sin tocar lo que el usuario ya
+    /// hubiera configurado.
+    #[test]
+    fn missing_checks_are_added_disabled_without_touching_the_existing_ones() {
+        let mut policy = SecurityPolicy {
+            checks: vec![CheckConfig {
+                id: "defender_realtime_protection".into(),
+                enabled: true,
+                mandatory: true,
+            }],
+        };
+
+        let changed = policy.add_missing_checks(["defender_realtime_protection", "firewall_enabled"]);
+
+        assert!(changed);
+        let defender = policy.checks.iter().find(|c| c.id == "defender_realtime_protection").unwrap();
+        assert!(defender.enabled && defender.mandatory, "se piso la configuracion existente");
+        let firewall = policy.checks.iter().find(|c| c.id == "firewall_enabled").unwrap();
+        assert!(!firewall.enabled, "un check nuevo no debe llegar activado");
+        assert!(!firewall.mandatory, "un check nuevo no debe llegar como obligatorio");
+    }
+
+    /// Sin cambios no debe reescribirse `policy.toml` en cada arranque.
+    #[test]
+    fn adding_checks_that_already_exist_reports_no_change() {
+        let mut policy = SecurityPolicy::bootstrap_default();
+        let ids: Vec<String> = policy.checks.iter().map(|c| c.id.clone()).collect();
+        assert!(!policy.add_missing_checks(ids.iter().map(String::as_str)));
     }
 
     #[test]

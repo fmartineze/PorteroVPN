@@ -357,6 +357,31 @@ declare_messages! {
         es: "BitLocker no esta disponible o no esta configurado en este equipo.",
         en: "BitLocker is unavailable or not configured on this computer."
     },
+    CheckFirewallName => {
+        es: "Cortafuegos activo (Centro de seguridad de Windows)",
+        en: "Firewall active (Windows Security Center)"
+    },
+    ReasonFirewallInactive => {
+        es: "Se requiere tener un cortafuegos activo para poder conectar.",
+        en: "An active firewall is required in order to connect."
+    },
+    // El nombre dice "exige" y no "tiene": lo que se lee es la bandera
+    // UF_PASSWD_NOTREQD de la cuenta, que indica si Windows le permite tener
+    // la contrasena en blanco. Una cuenta puede tener contrasena y aun asi
+    // estar marcada asi (visto en la practica), y prometer "tiene contrasena"
+    // seria mentir sobre lo que se comprueba.
+    CheckWindowsPasswordName => {
+        es: "La cuenta de Windows exige contrasena",
+        en: "The Windows account requires a password"
+    },
+    ReasonWindowsPasswordMissing => {
+        es: "Esta cuenta de Windows admite contrasena en blanco: se le puede \
+             quitar la contrasena sin que nada lo impida. Marca la cuenta como \
+             que requiere contrasena antes de conectar.",
+        en: "This Windows account allows a blank password: it can be left with \
+             no password at all. Mark the account as requiring a password \
+             before connecting."
+    },
 
     // --- Instalacion de OpenVPN ---------------------------------------
     InstallSearching => {

@@ -64,6 +64,10 @@ mod tests {
             Ok(antivirus::AntivirusStatus { real_time_protection_enabled: true })
         }
 
+        async fn firewall_status(&self) -> Result<crate::checks::firewall::FirewallStatus, WmiError> {
+            Ok(crate::checks::firewall::FirewallStatus { enabled: true })
+        }
+
         async fn bitlocker_status(&self) -> Result<svc_ipc::BitLockerVolumeStatus, WmiError> {
             self.bitlocker.clone().map_err(WmiError::Query)
         }

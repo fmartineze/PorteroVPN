@@ -48,6 +48,8 @@ exactamente cuál ha sido.
 | | Comprobación | Por defecto |
 |:--:| --- | --- |
 | 🦠 | Antivirus activo (Centro de seguridad de Windows) | **Activada y obligatoria** |
+| 🧱 | Cortafuegos activo (Centro de seguridad de Windows) | Desactivada |
+| 🔑 | La cuenta de Windows exige contraseña | Desactivada |
 | 🔒 | BitLocker activo en el disco del sistema | Desactivada |
 
 Cada una se marca por separado como **activa** (se ejecuta y se muestra) y como

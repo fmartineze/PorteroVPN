@@ -197,24 +197,11 @@ impl PorteroApp {
             SecurityPolicy::bootstrap_default()
         });
         // Reconciliacion con `policy.toml` ya guardados de antes de que
-        // existiera este check: sin esto, uno nuevo en el registro pero
-        // ausente del policy.toml del usuario ni se mostraria en
+        // existiera un check: sin esto, uno nuevo en el registro pero ausente
+        // del policy.toml del usuario ni se ejecutaria ni se mostraria en
         // Configuracion (la pantalla solo pinta los checks que encuentra en
-        // `policy.checks`, ver `render_settings_screen`). Desactivado por
-        // defecto -- activarlo es una eleccion del usuario, no algo que deba
-        // aparecer ya obligatorio tras una actualizacion silenciosa.
-        let mut policy_needs_save = false;
-        for check in registry.all() {
-            if !policy.checks.iter().any(|c| c.id == check.id()) {
-                policy.checks.push(storage::CheckConfig {
-                    id: check.id().to_string(),
-                    enabled: false,
-                    mandatory: false,
-                });
-                policy_needs_save = true;
-            }
-        }
-        if policy_needs_save {
+        // `policy.checks`, ver `render_settings_screen`).
+        if policy.add_missing_checks(registry.all().map(|c| c.id())) {
             if let Err(e) = storage::save_policy(&policy) {
                 tracing::warn!(error = %e, "no se pudo guardar policy.toml tras anadir checks nuevos");
             }

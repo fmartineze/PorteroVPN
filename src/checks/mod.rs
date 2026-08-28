@@ -5,6 +5,8 @@
 
 pub mod antivirus;
 pub mod bitlocker;
+pub mod firewall;
+pub mod windows_password;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,6 +45,9 @@ impl RetryPolicy {
 #[async_trait]
 pub trait WmiDataSource: Send + Sync {
     async fn antivirus_status(&self) -> Result<antivirus::AntivirusStatus, WmiError>;
+    /// Mismo namespace y misma codificacion de estado que `antivirus_status`,
+    /// solo cambia la clase consultada (ver `checks::firewall`).
+    async fn firewall_status(&self) -> Result<firewall::FirewallStatus, WmiError>;
     /// A diferencia de `antivirus_status` (consulta WMI directa en la
     /// propia GUI), esto viaja por IPC hasta `PorteroVPNSvc`: el namespace
     /// WMI de BitLocker esta restringido a Administradores y la GUI corre
@@ -88,8 +93,14 @@ impl CheckRegistry {
         let mut registry = Self { checks: HashMap::new() };
         registry.register(Box::new(antivirus::AntivirusActiveCheck));
         registry.register(Box::new(bitlocker::BitLockerEnabledCheck));
-        // futuros registros aqui, sin tocar el motor de ejecucion:
-        // registry.register(Box::new(FirewallEnabledCheck));
+        registry.register(Box::new(firewall::FirewallEnabledCheck));
+        registry.register(Box::new(windows_password::WindowsPasswordCheck));
+        // Ojo al anadir uno nuevo: no basta con registrarlo aqui. El motor
+        // recorre `policy.toml`, no el registro, asi que un check que no
+        // figure en la politica no se ejecuta ni aparece en Configuracion.
+        // De eso se encarga `SecurityPolicy::add_missing_checks`, que corre al
+        // arrancar; anadelo tambien a `bootstrap_default` para las
+        // instalaciones nuevas.
         registry
     }
 
@@ -208,8 +219,12 @@ mod tests {
             }
         }
 
-        // No usado por los tests de este modulo (solo ejercitan el check de
-        // antivirus): valor fijo solo para satisfacer el trait.
+        // No usados por los tests de este modulo (solo ejercitan el check de
+        // antivirus): valores fijos solo para satisfacer el trait.
+        async fn firewall_status(&self) -> Result<firewall::FirewallStatus, WmiError> {
+            Ok(firewall::FirewallStatus { enabled: true })
+        }
+
         async fn bitlocker_status(&self) -> Result<svc_ipc::BitLockerVolumeStatus, WmiError> {
             Ok(svc_ipc::BitLockerVolumeStatus::Unavailable)
         }
@@ -294,6 +309,10 @@ mod tests {
         async fn antivirus_status(&self) -> Result<antivirus::AntivirusStatus, WmiError> {
             let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(antivirus::AntivirusStatus { real_time_protection_enabled: call >= self.fails_before_success })
+        }
+
+        async fn firewall_status(&self) -> Result<firewall::FirewallStatus, WmiError> {
+            Ok(firewall::FirewallStatus { enabled: true })
         }
 
         async fn bitlocker_status(&self) -> Result<svc_ipc::BitLockerVolumeStatus, WmiError> {
