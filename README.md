@@ -71,10 +71,6 @@ instalación.
 **3.** El instalador copia la aplicación, registra el servicio `PorteroVPNSvc` y
 lo arranca. Listo.
 
-Tanto el instalador como la aplicación se muestran en **español o inglés** según
-el idioma de Windows, sin preguntar nada. El idioma de la aplicación se puede
-cambiar después desde [Configuración](#-configuración).
-
 No hace falta instalar OpenVPN a mano: la propia aplicación detecta si falta y
 ofrece descargarlo e instalarlo desde la pantalla de Conexiones.
 

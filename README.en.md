@@ -70,10 +70,6 @@ installation.
 **3.** The installer copies the application, registers the `PorteroVPNSvc`
 service and starts it. Done.
 
-Both the installer and the application show up in **English or Spanish**
-depending on the Windows language, without asking. The application's language
-can be changed afterwards from [Settings](#-settings).
-
 There is no need to install OpenVPN by hand: the application detects whether it
 is missing and offers to download and install it from the Connections screen.
 
