@@ -1,178 +1,196 @@
 # Portero VPN
 
 Cliente OpenVPN para Windows que exige comprobaciones de seguridad locales
-*antes* de dejar establecer la conexion. Interfaz en espanol, ventana compacta
-(380x540, tamano fijo) que se minimiza al icono de bandeja.
+**antes** de permitir la conexión.
 
-La razon de ser del proyecto: las comprobaciones que interesan (antivirus activo
-segun el Centro de seguridad de Windows) solo son fiables consultadas desde la
-sesion del usuario, no desde sesion 0 -- por eso no basta con un script
-`--up` de OpenVPN GUI y existe esta aplicacion.
+Si el equipo no cumple la política definida —por ejemplo, si el antivirus está
+desactivado— la conexión ni siquiera se intenta. La idea es que un portátil
+comprometido no pueda entrar en la red corporativa solo porque su usuario tenga
+el perfil `.ovpn` y las credenciales.
 
-> **Nota sobre la documentacion de diseno.** Los comentarios del codigo citan
-> un *plan de arquitectura* por secciones ("plan, seccion 3", "plan, seccion
-> 11", "plan, Contexto") en 29 sitios repartidos por 14 ficheros. Ese documento
-> **no forma parte de este repositorio**: se quedo fuera al copiar el proyecto
-> entre ordenadores el 2026-08-27. Si aparece, este es su sitio.
+Interfaz en español, ventana compacta que se minimiza al icono de bandeja.
 
-## Arquitectura
+## Por qué existe
 
-Tres crates en un workspace, con separacion de privilegios como decision
-central:
+Las comprobaciones que de verdad interesan solo son fiables **consultadas desde
+la sesión del usuario**. El estado del antivirus según el Centro de seguridad de
+Windows es el caso claro: desde sesión 0, donde corren los servicios, no se
+obtiene una respuesta de confianza.
 
-| Crate | Privilegios | Responsabilidad |
-| --- | --- | --- |
-| `portero-vpn` (raiz) | Usuario normal | GUI (egui/eframe sobre wgpu), motor de comprobaciones, credenciales, dialogo con la management interface de OpenVPN |
-| `svc/` -> `portero-vpn-svc` | LocalSystem | Solo lanza y mata `openvpn.exe`, y responde una consulta WMI de BitLocker |
-| `svc-ipc/` | -- | Tipos de mensaje compartidos entre los dos anteriores |
+Por eso no basta con un script `--up` de OpenVPN GUI ni con una tarea
+programada: hace falta una aplicación que corra en la sesión del usuario, haga
+las comprobaciones ahí y solo entonces autorice el arranque del túnel.
 
-El servicio elevado es deliberadamente minimo: no interpreta perfiles `.ovpn`,
-no ve credenciales y no decide politica de seguridad. Recibe por un named pipe
-(`\\.\pipe\PorteroVPN\ctrl`, JSON por lineas) la ruta y el puerto que la GUI ya
-ha elegido, y ejecuta `CreateProcess`. La unica excepcion es `QueryBitLocker`,
-que vive ahi porque su namespace WMI esta restringido a Administradores.
+## Comprobaciones disponibles
 
-### Flujo de una conexion
-
-1. La GUI ejecuta las comprobaciones activas en `policy.toml`. Si alguna
-   obligatoria falla (o queda indeterminada), no se arranca nada.
-2. Elige un puerto de management libre (25340-25400) y genera un *passfile* de
-   un solo uso.
-3. Pide a `PorteroVPNSvc` que lance `openvpn.exe --config ... --management ...
-   --management-hold --management-query-passwords --management-signal`.
-4. Se conecta a `127.0.0.1:<puerto>`, se autentica con el passfile y controla el
-   resto (credenciales, estado, log, bytecount) hablando con la management
-   interface directamente.
-5. Al desconectar: `signal SIGTERM` y, si no responde a tiempo, `StopProfile`
-   por el pipe como ultimo recurso. El passfile se borra siempre.
-
-### Modulos que conviene conocer antes de tocar nada
-
-- `src/connection.rs` -- orquestador del flujo completo, reintentos incluidos.
-- `src/mgmt/protocol.rs` -- parser de la management interface y maquina de
-  estados. Logica pura, cubierta por tests.
-- `src/checks/` -- motor de comprobaciones. Anadir una es: implementar `Check`,
-  registrarla en `CheckRegistry::new()`, y aparece sola en Configuracion.
-- `src/openvpn_install.rs` -- descarga OpenVPN Community, **verifica su firma
-  GPG** (resolviendo la subclave que firmo de verdad) y lo instala via MSI.
-- `src/gpu_fallback.rs` -- si no hay ningun backend grafico utilizable, relanza
-  el proceso con Vulkan por software (Lavapipe).
-
-Los comentarios del codigo documentan el incidente real que motivo cada
-constante y cada espera rara. Merece la pena leerlos antes de "simplificar"
-algo que parezca arbitrario.
-
-## Requisitos
-
-- Windows 10 o superior, x64.
-- Rust estable (probado con 1.96.0) con el toolchain MSVC.
-- Para empaquetar: [Inno Setup 6](https://jrsoftware.org/isdl.php).
-- En tiempo de ejecucion: OpenVPN Community. No hace falta instalarlo a mano --
-  la propia app lo detecta y ofrece descargarlo e instalarlo desde la pantalla
-  de Conexiones.
-
-## Compilar y probar
-
-```powershell
-cargo build --release --workspace   # OJO: --workspace es obligatorio, ver abajo
-cargo test  --workspace
-cargo clippy --workspace --all-targets
-```
-
-**`cargo build --release` a secas NO sirve.** El paquete raiz es el unico
-`default-member` del workspace, asi que sin `--workspace` no se genera
-`target\release\portero-vpn-svc.exe` y el instalador fallara al no encontrarlo.
-
-Algunos tests estan marcados `#[ignore]` porque dependen de red real
-(build.openvpn.net, keys.openpgp.org), del antivirus real de la maquina o de
-que `PorteroVPNSvc` este corriendo. Para ejecutarlos a mano:
-
-```powershell
-cargo test -- --ignored --nocapture
-```
-
-## Empaquetado
-
-1. Genera los dos ejecutables de release:
-
-   ```powershell
-   cargo build --release --workspace
-   ```
-
-2. Compila el instalador desde la carpeta `installer\`:
-
-   ```powershell
-   & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" portero-vpn.iss
-   ```
-
-El resultado queda en `installer\output\PorteroVPN-Setup.exe` (fuera del control
-de versiones). El instalador pide administrador una sola vez, copia los dos
-`.exe` mas el Lavapipe empaquetado, y registra y arranca `PorteroVPNSvc`.
-
-La firma de codigo esta pendiente: SmartScreen avisara hasta que se firme.
-
-### Sobre `assets/lavapipe/`
-
-`vulkan_lvp.dll` (56 MB) es el ICD de Vulkan por software que el instalador
-copia junto al ejecutable. Esta versionado a proposito, porque cargo no lo puede
-recuperar y sin el se pierde la red de seguridad para equipos sin ningun backend
-grafico (visto en una VM Win11 sobre Proxmox). Si algun dia se sube a un remoto
-tipo GitHub, conviene pasarlo a Git LFS.
-
-## Datos en tiempo de ejecucion
-
-Todo vive en `C:\ProgramData\PorteroVPN\`, fuera del repositorio:
-
-| Ruta | Contenido |
+| Comprobación | Por defecto |
 | --- | --- |
-| `profiles\<uuid>.ovpn` | Copia propia del perfil importado (el original no se toca) |
-| `profiles\<uuid>.meta.toml` | Metadatos + credenciales cifradas con DPAPI, si el usuario las guardo |
-| `policy.toml` | Que comprobaciones estan activas y son obligatorias |
-| `preferences.toml` | Preferencias generales de la app |
-| `config-password.hash` | Hash Argon2id (formato PHC) de la contrasena de Configuracion |
-| `logs\` | Log tecnico de la app y del servicio, rotacion diaria, 10 ficheros |
-| `logs\connections\` | Un log por intento de conexion, se conservan los 10 ultimos |
-| `run\` | Passfiles temporales de la management interface |
+| Antivirus activo (Centro de seguridad de Windows) | Activada y obligatoria |
+| BitLocker activo en el disco del sistema | Desactivada |
 
-La app repara en cada arranque los permisos de `BUILTIN\Users` sobre ese arbol
-(`icacls`), porque un unico arranque como Administrador bastaba para dejarla
-inutilizable en el siguiente arranque normal.
+Cada una se puede marcar como **activa** (se ejecuta y se muestra) y como
+**obligatoria** (si falla, bloquea la conexión). Se configuran desde la pantalla
+de Configuración, protegida por contraseña para que el propio usuario no pueda
+relajar la política.
 
-## Seguridad
+## Instalación
 
-- La GUI **nunca** corre elevada. Solo se pide UAC para acciones puntuales y
-  explicitas: instalar/reinstalar/quitar el servicio, y ejecutar el MSI de
-  OpenVPN.
-- Credenciales VPN: DPAPI ligado al usuario de Windows (sin
-  `CRYPTPROTECT_LOCAL_MACHINE`), con entropia adicional propia de la app. Nunca
-  en claro en disco, y el guardado es opt-in por perfil.
-- Contrasena de Configuracion: Argon2id con sal por hash.
-- La management interface se protege con un passfile de un solo uso, para que
-  ningun otro proceso local pueda tomar el control de la conexion.
-- El pipe de control concede acceso a usuarios autenticados (SDDL
-  `D:(A;;GA;;;AU)(A;;GA;;;SY)(A;;GA;;;BA)`), aceptable porque las unicas
-  operaciones que ofrece son arrancar y parar `openvpn.exe`.
+1. Descarga `PorteroVPN-Setup.exe` desde la sección
+   [Releases](https://github.com/fmartineze/PorteroVPN/releases). Si todavía no
+   hay ninguna publicada, compílalo tú mismo: ver [Desarrollo](#desarrollo).
+2. Ejecútalo. Pedirá permisos de administrador **una sola vez**, durante la
+   instalación.
+3. El instalador copia la aplicación, registra el servicio `PorteroVPNSvc` y lo
+   arranca.
+
+No hace falta instalar OpenVPN a mano: la propia aplicación detecta si falta y
+ofrece descargarlo e instalarlo —verificando su firma GPG— desde la pantalla de
+Conexiones.
+
+> El ejecutable todavía no está firmado digitalmente, así que SmartScreen
+> mostrará un aviso la primera vez. Hay que elegir "Más información" →
+> "Ejecutar de todas formas".
+
+**Requisitos:** Windows 10 o superior, 64 bits.
+
+## Uso
+
+### Primer arranque
+
+Al abrir la aplicación por primera vez te pedirá **definir la contraseña de
+Configuración** (mínimo 8 caracteres). Esa contraseña protege la sección donde
+se decide qué comprobaciones son obligatorias, así que debe conocerla quien
+administra el equipo, no necesariamente quien lo usa.
+
+### Importar un perfil
+
+En la pantalla **Conexiones**, pulsa **Importar ovpn** y elige el archivo. Se te
+pedirá:
+
+- Un **nombre** para identificar la conexión en la lista.
+- Opcionalmente, **usuario y contraseña**, marcando "Recordar credenciales para
+  este perfil".
+
+La aplicación guarda una copia propia del perfil; el archivo original no se toca
+ni hace falta conservarlo.
+
+### Conectar
+
+1. Selecciona la conexión en la lista.
+2. Pulsa **CONECTAR**.
+3. Se ejecutan las comprobaciones de seguridad. Si alguna obligatoria falla, la
+   conexión se detiene ahí y verás cuál ha sido.
+4. Si el perfil no tiene credenciales guardadas, se piden en ese momento.
+
+Con el túnel levantado se muestran la IP local, el servidor, el tiempo conectado
+y el tráfico. El botón pasa a **DESCONECTAR**.
+
+Cerrar la ventana con la **X** minimiza al icono de bandeja sin cortar la
+conexión. Desde el menú del icono: **Panel** para volver a abrirla y **Cerrar**
+para salir de verdad.
+
+### Configuración
+
+El icono del engranaje abre la sección protegida, que pide la contraseña. Desde
+ahí se puede:
+
+- Activar o desactivar cada comprobación y marcarla como obligatoria.
+- Minimizar el panel automáticamente al conectar.
+- Cambiar la contraseña de Configuración.
+- Instalar, reinstalar o desinstalar el servicio `PorteroVPNSvc`.
+
+## Cómo funciona por dentro
+
+Tres componentes, con **separación de privilegios** como decisión central:
+
+| Componente | Privilegios | Responsabilidad |
+| --- | --- | --- |
+| `portero-vpn` | Usuario normal | Interfaz, comprobaciones, credenciales y control de la conexión |
+| `portero-vpn-svc` | LocalSystem | Solo lanza y mata `openvpn.exe` |
+| `svc-ipc` | — | Tipos de mensaje compartidos entre ambos |
+
+La interfaz **nunca corre elevada**. El servicio del sistema es deliberadamente
+mínimo: no interpreta perfiles `.ovpn`, no ve credenciales y no decide política
+de seguridad. Recibe por un named pipe la ruta y el puerto que la interfaz ya ha
+elegido, y ejecuta el proceso. La única excepción es la consulta de BitLocker,
+que vive ahí porque su namespace WMI está restringido a Administradores.
+
+Una vez arrancado OpenVPN, la interfaz habla directamente con su *management
+interface* por un socket TCP local, autenticándose con un fichero de contraseña
+de un solo uso para que ningún otro proceso de la máquina pueda tomar el control
+del túnel.
+
+### Seguridad de las credenciales
+
+- **Credenciales VPN:** cifradas con DPAPI ligado al usuario de Windows, con
+  entropía adicional propia de la aplicación. Nunca se guardan en claro, y
+  guardarlas es opcional por perfil.
+- **Contraseña de Configuración:** hash Argon2id con sal por contraseña.
+
+### Dónde se guardan los datos
+
+Todo vive en `C:\ProgramData\PorteroVPN\`: los perfiles importados y sus
+metadatos, la política de comprobaciones, las preferencias, y los registros de
+la aplicación y de cada intento de conexión (`logs\`, se conservan los 10
+últimos). Es el primer sitio donde mirar si algo falla.
+
+## Desarrollo
+
+Necesitas Rust estable con el toolchain MSVC (probado con 1.96.0) y, para
+empaquetar, [Inno Setup 6](https://jrsoftware.org/isdl.php).
+
+```powershell
+cargo build --release --workspace
+cargo test --workspace
+```
+
+**`cargo build --release` a secas NO sirve.** El paquete raíz es el único
+`default-member` del workspace, así que sin `--workspace` no se genera
+`portero-vpn-svc.exe` y el instalador fallará al no encontrarlo.
+
+Algunos tests están marcados `#[ignore]` porque dependen de red real, del
+antivirus de la máquina o de que `PorteroVPNSvc` esté corriendo. Para
+ejecutarlos: `cargo test -- --ignored`.
+
+Para generar el instalador, desde `installer\`:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" portero-vpn.iss
+```
+
+El resultado queda en `installer\output\PorteroVPN-Setup.exe`.
+
+Añadir una comprobación nueva consiste en implementar el trait `Check` y
+registrarla en `CheckRegistry::new()`; aparece sola en la pantalla de
+Configuración.
+
+Los comentarios del código documentan el incidente real que motivó cada
+constante y cada espera aparentemente arbitraria. Merece la pena leerlos antes
+de "simplificar" algo que parezca de más.
+
+## Limitaciones conocidas
+
+- Una sola conexión activa a la vez.
+- El volumen de arranque se asume `C:` en la consulta de BitLocker.
+- En Windows Home, donde BitLocker no existe, la comprobación se resuelve como
+  fallo. Si se marca como obligatoria en un equipo Home, bloquea la conexión sin
+  salida posible para el usuario. Viene desactivada por defecto.
+- `vendor/egui-wgpu-0.29.1` es una copia local parcheada de egui-wgpu 0.29.1
+  (reintenta con `force_fallback_adapter: true`). Al subir de versión de
+  eframe/egui hay que revisar si el parche sigue haciendo falta.
+- `assets/lavapipe/vulkan_lvp.dll` (54 MB) está versionado a propósito: es el
+  driver Vulkan por software que se usa como último recurso en equipos sin
+  ningún backend gráfico utilizable (visto en una VM Win11 sobre Proxmox).
 
 ## Licencia
 
 Portero VPN se distribuye bajo la **Licencia Apache 2.0** (ver `LICENSE` y
 `NOTICE`).
 
-`openvpn.exe` esta bajo GPLv2, pero **no se enlaza ni se redistribuye**: se
-ejecuta como proceso independiente y se habla con el por linea de comandos y
-por su management interface. Esa separacion es deliberada y es la base para que
-las obligaciones de la GPLv2 no alcancen a este codigo — no la revierta nadie
-sin revisar antes las implicaciones. El detalle completo, junto con el reparto
-de licencias de las 391 dependencias (todas permisivas) y el Lavapipe que si se
-empaqueta, esta en `THIRD_PARTY_NOTICES.md`.
-
-## Limitaciones conocidas
-
-- Una sola conexion activa a la vez.
-- El volumen de arranque se asume `C:` en la consulta de BitLocker.
-- `BitLockerVolumeStatus::Unavailable` (tipico en Windows Home, donde BitLocker
-  no existe) se trata como fallo, asi que activar esa comprobacion en un equipo
-  Home bloquea la conexion sin salida posible para el usuario.
-- `vendor/egui-wgpu-0.29.1` es una copia local parcheada de egui-wgpu 0.29.1
-  (reintenta con `force_fallback_adapter: true`). Al subir de version de
-  eframe/egui hay que revisar si el parche sigue haciendo falta.
+`openvpn.exe` está bajo GPLv2, pero **no se enlaza ni se redistribuye**: se
+ejecuta como proceso independiente y se habla con él por línea de comandos y por
+su management interface. Esa separación es deliberada y es la base para que las
+obligaciones de la GPLv2 no alcancen a este código; no debe revertirse sin
+revisar antes sus implicaciones. El detalle completo, junto con el reparto de
+licencias de las 391 dependencias (todas permisivas), está en
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
