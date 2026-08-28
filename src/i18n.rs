@@ -336,8 +336,8 @@ declare_messages! {
 
     // --- Comprobaciones de seguridad ----------------------------------
     CheckAntivirusName => {
-        es: "Antivirus activo (Centro de seguridad de Windows)",
-        en: "Antivirus active (Windows Security Center)"
+        es: "Antivirus activo",
+        en: "Antivirus active"
     },
     CheckBitLockerName => {
         es: "BitLocker activo en el disco del sistema",
@@ -358,8 +358,8 @@ declare_messages! {
         en: "BitLocker is unavailable or not configured on this computer."
     },
     CheckFirewallName => {
-        es: "Cortafuegos activo (Centro de seguridad de Windows)",
-        en: "Firewall active (Windows Security Center)"
+        es: "Cortafuegos activo",
+        en: "Firewall active"
     },
     ReasonFirewallInactive => {
         es: "Se requiere tener un cortafuegos activo para poder conectar.",
