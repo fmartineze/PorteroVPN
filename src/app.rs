@@ -845,6 +845,16 @@ impl PorteroApp {
         let mut delete_requested = false;
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(row_rect), |ui| {
+            // Sin esto, hacer clic sobre el NOMBRE del perfil no seleccionaba
+            // la fila: solo funcionaba pinchando en el fondo. egui trae
+            // `selectable_labels` activo por defecto, y una etiqueta
+            // seleccionable reclama `Sense::click_and_drag()` para poder
+            // seleccionar su texto; como las etiquetas se anaden despues del
+            // `ui.interact` de la fila, ganaban el clic justo encima del
+            // texto. Se desactiva solo aqui: en el log de conexion y en los
+            // datos de la conexion (IP, servidor) poder seleccionar y copiar
+            // si es util.
+            ui.style_mut().interaction.selectable_labels = false;
             ui.horizontal_centered(|ui| {
                 ui.add_space(10.0);
                 ui.colored_label(status_color, "\u{25CF}");
