@@ -28,6 +28,13 @@ use crate::{auth, checks};
 
 const MAX_LOG_LINES: usize = 2000;
 
+/// Alto de la barra inferior, que se pinta a mano sobre el panel central en
+/// vez de como panel propio (ver `render_bottom_bar` para el porque). Al no
+/// ser un panel de egui, nada reserva ese espacio automaticamente: quien
+/// dibuje encima tiene que descontarlo a mano, y por eso es una constante
+/// compartida y no un numero suelto dentro de la funcion.
+const BOTTOM_BAR_HEIGHT: f32 = 90.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Connections,
@@ -606,7 +613,7 @@ impl PorteroApp {
     /// `render_connections_screen` en vez de como panel/area aparte.
     fn render_bottom_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let bar_height = 90.0;
+        let bar_height = BOTTOM_BAR_HEIGHT;
         // `ui.max_rect()` (el rect de CentralPanel) en vez de
         // `ctx.screen_rect()`: es la referencia que coincide con lo que de
         // verdad se pinta en pantalla en esta ventana.
@@ -784,8 +791,10 @@ impl PorteroApp {
 
         // Alto maximo para que la lista haga scroll en vez de empujar el
         // resto de la pantalla (y el boton inferior, pintado aparte) fuera
-        // de la ventana cuando hay muchos perfiles.
-        let list_max_height = (ui.available_height() - 140.0).max(80.0);
+        // de la ventana cuando hay muchos perfiles. Solo hay que reservar la
+        // barra inferior: el estado de la conexion ya no se anade debajo,
+        // se pinta encima (ver `render_active_connection_overlay`).
+        let list_max_height = (ui.available_height() - BOTTOM_BAR_HEIGHT - 8.0).max(80.0);
         egui::ScrollArea::vertical().max_height(list_max_height).show(ui, |ui| {
             let profiles = self.profiles.clone();
             for profile in &profiles {
@@ -793,11 +802,7 @@ impl PorteroApp {
             }
         });
 
-        if let Some(active) = &self.active {
-            ui.separator();
-            ui.heading(i18n::connecting_to(&active.display_name));
-        }
-        self.render_active_connection_card(ui);
+        self.render_active_connection_overlay(ui);
     }
 
     /// Fila de perfil: seleccionable con un clic (arma el boton unico
@@ -900,22 +905,101 @@ impl PorteroApp {
     /// conectado). Los errores ya no se muestran aqui: van al modal
     /// centrado (`render_error_modal`), que ademas se dispara en el mismo
     /// instante en que ocurren (ver `drain_events`).
-    fn render_active_connection_card(&mut self, ui: &mut egui::Ui) {
+    ///
+    /// Se pinta como capa por encima de la lista de conexiones, no debajo de
+    /// ella. Antes iba detras del `ScrollArea` de perfiles, dentro del mismo
+    /// flujo vertical, y en una ventana de 540px de alto fijo no quedaba
+    /// sitio: la lista se llevaba casi todo, la barra inferior ocupa sus 90px
+    /// pintados aparte, y la tarjeta acababa recortada contra el borde -- la
+    /// IP, el trafico y el tiempo conectado se cortaban a media linea. Como
+    /// capa, ocupa todo el hueco util y ademas su contenido tiene scroll
+    /// propio, asi que un fallo de comprobacion con motivo largo tampoco la
+    /// desborda.
+    fn render_active_connection_overlay(&mut self, ui: &mut egui::Ui) {
         let Some(active) = &self.active else { return };
+        let display_name = active.display_name.clone();
         let check_results = active.check_results.clone();
         let phase = active.phase.clone();
         let bytes_in = active.bytes_in;
         let bytes_out = active.bytes_out;
 
+        // Todo el panel central menos la barra inferior, con un margen que
+        // deja asomar la lista por los lados: se lee como algo puesto encima,
+        // no como otra pantalla.
+        let panel = ui.max_rect();
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(panel.left() + 6.0, panel.top() + 6.0),
+            egui::pos2(panel.right() - 6.0, panel.bottom() - BOTTOM_BAR_HEIGHT - 6.0),
+        );
+
         let mut show_log_requested = false;
+        let overlay_id = egui::Id::new("active_connection_overlay");
 
-        ui.add_space(8.0);
-        egui::Frame::group(ui.style()).rounding(10.0).show(ui, |ui| {
-            ui.set_width(ui.available_width());
+        egui::Area::new(overlay_id)
+            // `Middle` y no `Foreground`: por encima de la lista, pero por
+            // debajo de los modales de credenciales y de error, que tienen que
+            // poder taparla.
+            .order(egui::Order::Middle)
+            .fixed_pos(rect.left_top())
+            .show(ui.ctx(), |ui| {
+                // Absorbe el puntero en toda la superficie para que no se
+                // pueda seleccionar ni editar un perfil de la lista de debajo,
+                // que sigue ahi aunque no se vea. `interact` no reserva
+                // espacio, asi que no descoloca el contenido de abajo.
+                let _ = ui.interact(rect, overlay_id.with("blocker"), egui::Sense::click_and_drag());
 
+                egui::Frame::none()
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::SURFACE_RAISED))
+                    .rounding(egui::Rounding::same(10.0))
+                    .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+                    .show(ui, |ui| {
+                        ui.set_width(rect.width() - 24.0);
+                        ui.set_height(rect.height() - 20.0);
+
+                        let title = if matches!(phase, ConnectionPhase::Connected { .. }) {
+                            i18n::connected_to(&display_name)
+                        } else {
+                            i18n::connecting_to(&display_name)
+                        };
+                        ui.label(RichText::new(title).heading());
+                        ui.separator();
+
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                self.render_active_connection_body(
+                                    ui,
+                                    &check_results,
+                                    &phase,
+                                    bytes_in,
+                                    bytes_out,
+                                    &mut show_log_requested,
+                                );
+                            });
+                    });
+            });
+
+        if show_log_requested {
+            self.show_log_window = true;
+        }
+    }
+
+    /// Cuerpo de la capa de conexion activa: comprobaciones, estado y acceso
+    /// al log. Separado de `render_active_connection_overlay` solo para que
+    /// ese quede legible; no se usa desde ningun otro sitio.
+    fn render_active_connection_body(
+        &self,
+        ui: &mut egui::Ui,
+        check_results: &[CheckRunResult],
+        phase: &ConnectionPhase,
+        bytes_in: u64,
+        bytes_out: u64,
+        show_log_requested: &mut bool,
+    ) {
             if !check_results.is_empty() {
                 ui.label(RichText::new(t(Msg::SecurityChecksHeading)).strong());
-                for result in &check_results {
+                for result in check_results {
                     let (color, symbol) = match &result.outcome {
                         CheckOutcome::Pass => (theme::SUCCESS, "\u{2714}"),
                         CheckOutcome::Fail { .. } | CheckOutcome::Indeterminate { .. } => (theme::DANGER, "\u{2716}"),
@@ -931,7 +1015,7 @@ impl PorteroApp {
                 ui.separator();
             }
 
-            match &phase {
+            match phase {
                 ConnectionPhase::RunningChecks => {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -959,14 +1043,9 @@ impl PorteroApp {
 
             ui.horizontal(|ui| {
                 if ui.button(t(Msg::BtnViewConnLog)).clicked() {
-                    show_log_requested = true;
+                    *show_log_requested = true;
                 }
             });
-        });
-
-        if show_log_requested {
-            self.show_log_window = true;
-        }
     }
 
     /// Formulario de credenciales VPN, en un modal centrado sobre la

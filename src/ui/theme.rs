@@ -54,6 +54,16 @@ pub fn apply(ctx: &egui::Context) {
     style.visuals.selection.bg_fill = ACCENT.linear_multiply(0.4);
     style.visuals.selection.stroke = Stroke::new(1.0_f32, ACCENT);
 
+    // Barra de scroll solida y siempre presente, en vez de la flotante que
+    // egui trae por defecto. La flotante solo aparece con el puntero encima
+    // del area, asi que con la lista de conexiones llena (comprobado con 20
+    // perfiles) nada indicaba que hubiera mas por debajo del ultimo visible:
+    // la rueda del raton funcionaba, pero habia que adivinarlo. Ocupando
+    // sitio de verdad, ademas, el texto de las filas ya no queda por debajo
+    // de la barra cuando esta aparece.
+    style.spacing.scroll.floating = false;
+    style.spacing.scroll.bar_width = 8.0;
+
     style.spacing.item_spacing = Vec2::new(10.0, 10.0);
     style.spacing.button_padding = Vec2::new(14.0, 8.0);
     style.spacing.window_margin = Margin::same(16.0);
