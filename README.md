@@ -38,17 +38,6 @@ y solo si se cumplen autoriza el arranque del túnel.** Si alguna comprobación
 obligatoria falla, la conexión ni siquiera se intenta y el usuario ve
 exactamente cuál ha sido.
 
-## Por qué no vale un script
-
-Las comprobaciones que de verdad interesan solo son fiables **consultadas desde
-la sesión del usuario**. El estado del antivirus según el Centro de seguridad de
-Windows es el caso claro: desde sesión 0, donde corren los servicios, no se
-obtiene una respuesta de confianza.
-
-Por eso no basta con un script `--up` de OpenVPN GUI ni con una tarea
-programada. Hace falta una aplicación que corra en la sesión del usuario, haga
-las comprobaciones ahí y solo entonces autorice la conexión.
-
 ## Comprobaciones disponibles
 
 | | Comprobación | Por defecto |
@@ -60,9 +49,6 @@ Cada una se marca por separado como **activa** (se ejecuta y se muestra) y como
 **obligatoria** (si falla, bloquea la conexión). Se configuran desde la pantalla
 de Configuración, protegida por contraseña para que el propio usuario no pueda
 relajar la política.
-
-<sub>Añadir una comprobación nueva es implementar un trait y registrarla — ver
-[Desarrollo](#desarrollo).</sub>
 
 ---
 
@@ -83,13 +69,7 @@ instalación.
 lo arranca. Listo.
 
 No hace falta instalar OpenVPN a mano: la propia aplicación detecta si falta y
-ofrece descargarlo e instalarlo —verificando su firma GPG— desde la pantalla de
-Conexiones.
-
-> [!WARNING]
-> El ejecutable todavía no está firmado digitalmente, así que SmartScreen
-> mostrará un aviso la primera vez. Elige **"Más información"** →
-> **"Ejecutar de todas formas"**.
+ofrece descargarlo e instalarlo desde la pantalla de Conexiones.
 
 ---
 
