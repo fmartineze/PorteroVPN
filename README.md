@@ -2,7 +2,7 @@
 
 # 🛡️ Portero VPN
 
-### Un cliente OpenVPN que no deja pasar a cualquiera
+### Un cliente VPN que no deja pasar a cualquiera
 
 **Comprueba la seguridad del equipo _antes_ de permitir la conexión.**<br>
 Si el antivirus está desactivado, el túnel no se levanta.
@@ -90,8 +90,8 @@ necesariamente quien lo usa.
 
 ### 📥 Importar un perfil
 
-En la pantalla **Conexiones**, pulsa **Importar ovpn** y elige el archivo. Se te
-pedirá:
+En la pantalla **Conexiones**, pulsa **+ovpn** (OpenVPN) o **+wg** (WireGuard) y
+elige el archivo. Se te pedirá:
 
 - Un **nombre** para identificar la conexión en la lista.
 - Opcionalmente, **usuario y contraseña**, marcando _"Recordar credenciales para

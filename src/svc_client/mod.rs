@@ -88,6 +88,41 @@ impl SvcClient {
             other => Err(SvcClientError::UnexpectedResponse(other)),
         }
     }
+
+    pub async fn start_wireguard_tunnel(config_path: &str, tunnel_name: &str) -> Result<(), SvcClientError> {
+        let request = IpcRequest::StartWireGuardTunnel {
+            config_path: config_path.to_string(),
+            tunnel_name: tunnel_name.to_string(),
+        };
+        match send_request(request).await? {
+            IpcResponse::WireGuardStarted => Ok(()),
+            IpcResponse::Error { message } => Err(SvcClientError::ServiceError(message)),
+            other => Err(SvcClientError::UnexpectedResponse(other)),
+        }
+    }
+
+    pub async fn stop_wireguard_tunnel(tunnel_name: &str) -> Result<(), SvcClientError> {
+        let request = IpcRequest::StopWireGuardTunnel { tunnel_name: tunnel_name.to_string() };
+        match send_request(request).await? {
+            IpcResponse::Stopped => Ok(()),
+            IpcResponse::Error { message } => Err(SvcClientError::ServiceError(message)),
+            other => Err(SvcClientError::UnexpectedResponse(other)),
+        }
+    }
+
+    /// Ver `svc_ipc::IpcRequest::QueryWireGuardStatus`: como con BitLocker, lo
+    /// consulta el servicio porque el pipe de estado de cada tunel esta
+    /// restringido a Administradores.
+    pub async fn query_wireguard_status(
+        tunnel_name: &str,
+    ) -> Result<svc_ipc::WireGuardTunnelStatus, SvcClientError> {
+        let request = IpcRequest::QueryWireGuardStatus { tunnel_name: tunnel_name.to_string() };
+        match send_request(request).await? {
+            IpcResponse::WireGuardStatus(status) => Ok(status),
+            IpcResponse::Error { message } => Err(SvcClientError::ServiceError(message)),
+            other => Err(SvcClientError::UnexpectedResponse(other)),
+        }
+    }
 }
 
 async fn send_request(request: IpcRequest) -> Result<IpcResponse, SvcClientError> {

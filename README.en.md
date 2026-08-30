@@ -2,7 +2,7 @@
 
 # 🛡️ Portero VPN
 
-### An OpenVPN client that does not let just anyone through
+### A VPN client that does not let just anyone through
 
 **It checks the computer's security _before_ allowing the connection.**<br>
 If the antivirus is disabled, the tunnel never comes up.
@@ -89,8 +89,8 @@ necessarily by whoever uses it.
 
 ### 📥 Importing a profile
 
-On the **Connections** screen, press **Import ovpn** and pick the file. You will
-be asked for:
+On the **Connections** screen, press **+ovpn** (OpenVPN) or **+wg** (WireGuard)
+and pick the file. You will be asked for:
 
 - A **name** to identify the connection in the list.
 - Optionally, a **username and password**, by ticking _"Remember credentials for

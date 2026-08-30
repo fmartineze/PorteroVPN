@@ -121,8 +121,19 @@ pub fn t(msg: Msg) -> &'static str {
 declare_messages! {
     // --- Barra superior -----------------------------------------------
     NavConnections    => { es: "Conexiones",     en: "Connections" },
-    NavImportOvpn     => { es: "Importar ovpn",  en: "Import ovpn" },
     NavSettingsTip    => { es: "Configuracion",  en: "Settings" },
+    // Etiquetas cortas a proposito: los dos botones tienen que caber junto a
+    // "Conexiones" en una barra de 380px. El hint explica cual es cual.
+    NavImportOvpn     => { es: "+ovpn", en: "+ovpn" },
+    NavImportWg       => { es: "+wg",   en: "+wg" },
+    NavImportOvpnTip  => {
+        es: "Importar un perfil de OpenVPN (.ovpn)",
+        en: "Import an OpenVPN profile (.ovpn)"
+    },
+    NavImportWgTip    => {
+        es: "Importar un tunel de WireGuard (.conf)",
+        en: "Import a WireGuard tunnel (.conf)"
+    },
 
     // --- Barra inferior -----------------------------------------------
     BtnConnect        => { es: "CONECTAR",           en: "CONNECT" },
@@ -146,6 +157,10 @@ declare_messages! {
         es: "Instala OpenVPN Community para poder conectar.",
         en: "Install OpenVPN Community before connecting."
     },
+    TipInstallWireGuard => {
+        es: "Instala WireGuard para poder conectar este tunel.",
+        en: "Install WireGuard before connecting this tunnel."
+    },
     TipChooseConnection => {
         es: "Elige una conexion de la lista.",
         en: "Choose a connection from the list."
@@ -162,6 +177,12 @@ declare_messages! {
         en: "OpenVPN Community is not installed yet: it is required in order to connect."
     },
     BtnInstallOpenVpn => { es: "Instalar OpenVPN", en: "Install OpenVPN" },
+    BannerWireGuardMissing => {
+        es: "Tienes tuneles de WireGuard pero WireGuard no esta instalado: hace \
+             falta para poder conectarlos.",
+        en: "You have WireGuard tunnels but WireGuard is not installed: it is \
+             required in order to connect them."
+    },
     BtnRetry          => { es: "Reintentar",       en: "Retry" },
     NoProfilesYet     => {
         es: "Todavia no has importado ningun perfil .ovpn.",
@@ -206,6 +227,16 @@ declare_messages! {
 
     // --- Importar / editar perfil -------------------------------------
     ImportTitle       => { es: "Importar perfil .ovpn", en: "Import .ovpn profile" },
+    ImportWgTitle     => { es: "Importar tunel .conf",  en: "Import .conf tunnel" },
+    /// WireGuard autentica con un par de claves dentro del propio `.conf`, no
+    /// con usuario y contrasena. Se dice en el dialogo para que no parezca que
+    /// faltan campos.
+    ImportWgNoCredentials => {
+        es: "WireGuard no usa usuario ni contrasena: las claves van dentro del \
+             propio fichero, que se guarda cifrado.",
+        en: "WireGuard uses no username or password: the keys live inside the \
+             file itself, which is stored encrypted."
+    },
     EditTitle         => { es: "Editar conexion",       en: "Edit connection" },
     FieldName         => { es: "Nombre:",               en: "Name:" },
     RememberForProfile => {
@@ -388,6 +419,28 @@ declare_messages! {
         en: "openvpn.exe closed the connection during startup"
     },
     OutcomeOk => { es: "ok", en: "ok" },
+
+    // --- WireGuard -----------------------------------------------------
+    ErrWireGuardNoHandshake => {
+        es: "El servidor de WireGuard no respondio: el tunel se levanto pero no \
+             se completo ningun handshake.",
+        en: "The WireGuard server did not respond: the tunnel came up but no \
+             handshake completed."
+    },
+    /// Lo que se muestra mientras se espera el primer handshake. No es un
+    /// error: el handshake no ocurre al levantar el tunel, sino cuando hay
+    /// trafico que enviar.
+    WgWaitingHandshake => {
+        es: "Esperando respuesta del servidor...",
+        en: "Waiting for the server to respond..."
+    },
+    /// El indicador que certifica que el tunel funciona ahora mismo, no que
+    /// funciono alguna vez.
+    WgTunnelVerified => { es: "Tunel verificado", en: "Tunnel verified" },
+    WgTunnelStale     => {
+        es: "Sin respuesta del servidor",
+        en: "No response from the server"
+    },
 
     // Detalles tecnicos de bajo nivel. No se muestran solos, pero acaban
     // incrustados en un mensaje de usuario ("no se pudo completar la conexion
@@ -603,6 +656,23 @@ pub fn password_rejected_by_mgmt(response: &str) -> String {
     match current() {
         Lang::Es => format!("la management interface no acepto la contrasena (respuesta: {response})"),
         Lang::En => format!("the management interface rejected the password (response: {response})"),
+    }
+}
+
+/// Antiguedad del ultimo handshake del tunel. En minutos a partir del minuto,
+/// que es cuando los segundos dejan de decir nada util.
+pub fn last_handshake(secs_ago: u64) -> String {
+    if secs_ago < 60 {
+        match current() {
+            Lang::Es => format!("Ultimo handshake: hace {secs_ago} s"),
+            Lang::En => format!("Last handshake: {secs_ago} s ago"),
+        }
+    } else {
+        let mins = secs_ago / 60;
+        match current() {
+            Lang::Es => format!("Ultimo handshake: hace {mins} min"),
+            Lang::En => format!("Last handshake: {mins} min ago"),
+        }
     }
 }
 

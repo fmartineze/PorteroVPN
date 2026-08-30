@@ -323,6 +323,27 @@ async fn handle_request(request: IpcRequest) -> IpcResponse {
             });
             IpcResponse::BitLockerStatus(status)
         }
+        IpcRequest::StartWireGuardTunnel { config_path, tunnel_name } => {
+            match start_wireguard_tunnel(&config_path, &tunnel_name).await {
+                Ok(()) => IpcResponse::WireGuardStarted,
+                Err(e) => {
+                    tracing::error!("fallo al levantar el tunel de WireGuard: {e:#}");
+                    IpcResponse::Error { message: e.to_string() }
+                }
+            }
+        }
+        IpcRequest::StopWireGuardTunnel { tunnel_name } => {
+            match stop_wireguard_tunnel(&tunnel_name).await {
+                Ok(()) => IpcResponse::Stopped,
+                Err(e) => IpcResponse::Error { message: e.to_string() },
+            }
+        }
+        IpcRequest::QueryWireGuardStatus { tunnel_name } => {
+            match query_wireguard_status(&tunnel_name).await {
+                Ok(status) => IpcResponse::WireGuardStatus(status),
+                Err(e) => IpcResponse::Error { message: e.to_string() },
+            }
+        }
     }
 }
 
@@ -452,4 +473,223 @@ async fn stop_openvpn(pid: u32) -> Result<()> {
 
     tracing::info!(pid, "openvpn.exe terminado a la fuerza");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// WireGuard
+//
+// A diferencia de OpenVPN, aqui no se lanza ni se vigila ningun proceso: se le
+// pide a `wireguard.exe` que registre el tunel como servicio propio de Windows
+// y el se encarga del resto. Lo que si hace falta es poder consultar su estado,
+// y para eso cada tunel expone un named pipe restringido a Administradores --
+// el mismo motivo por el que `QueryBitLocker` vive aqui y no en la GUI.
+// ---------------------------------------------------------------------------
+
+/// Cuanto esperar a que `wireguard.exe` termine de instalar o quitar un tunel.
+/// Es una operacion sobre el Service Control Manager, rapida; si se pasa de
+/// aqui es que algo va mal y conviene devolver el error en vez de dejar a la
+/// GUI esperando.
+const WIREGUARD_CLI_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn run_wireguard_cli(args: &[&str]) -> Result<()> {
+    let exe = svc_ipc::wireguard_path::locate_wireguard_exe()
+        .context("no se encontro wireguard.exe; instala WireGuard para Windows")?;
+
+    let output = tokio::time::timeout(WIREGUARD_CLI_TIMEOUT, Command::new(exe).args(args).output())
+        .await
+        .context("wireguard.exe no respondio a tiempo")?
+        .context("no se pudo ejecutar wireguard.exe")?;
+
+    if !output.status.success() {
+        // wireguard.exe escribe el motivo en stderr; sin esto el usuario solo
+        // veria un codigo de salida.
+        let detalle = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "wireguard.exe fallo ({}): {}",
+            output.status,
+            if detalle.is_empty() { "sin detalle" } else { &detalle }
+        );
+    }
+    Ok(())
+}
+
+async fn start_wireguard_tunnel(config_path: &str, tunnel_name: &str) -> Result<()> {
+    anyhow::ensure!(
+        svc_ipc::wireguard_path::is_ours(tunnel_name),
+        "nombre de tunel inesperado: {tunnel_name}"
+    );
+
+    // Si quedo uno anterior con el mismo nombre (cuelgue de la GUI, reconectar
+    // sin desconectar), instalar encima falla. Se retira primero; que no exista
+    // no es un error.
+    let _ = run_wireguard_cli(&["/uninstalltunnelservice", tunnel_name]).await;
+
+    run_wireguard_cli(&["/installtunnelservice", config_path]).await?;
+    tracing::info!(tunnel_name, "tunel de WireGuard levantado");
+    Ok(())
+}
+
+async fn stop_wireguard_tunnel(tunnel_name: &str) -> Result<()> {
+    anyhow::ensure!(
+        svc_ipc::wireguard_path::is_ours(tunnel_name),
+        "nombre de tunel inesperado: {tunnel_name}"
+    );
+    run_wireguard_cli(&["/uninstalltunnelservice", tunnel_name]).await?;
+    tracing::info!(tunnel_name, "tunel de WireGuard retirado");
+    Ok(())
+}
+
+/// Ruta del pipe de estado de un tunel. Lo expone el propio servicio del tunel
+/// que crea WireGuard, bajo el prefijo protegido de Administradores.
+fn tunnel_pipe_path(tunnel_name: &str) -> String {
+    format!(r"\\.\pipe\ProtectedPrefix\Administrators\WireGuard\{tunnel_name}")
+}
+
+async fn query_wireguard_status(tunnel_name: &str) -> Result<svc_ipc::WireGuardTunnelStatus> {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    anyhow::ensure!(
+        svc_ipc::wireguard_path::is_ours(tunnel_name),
+        "nombre de tunel inesperado: {tunnel_name}"
+    );
+
+    let mut pipe = ClientOptions::new()
+        .open(tunnel_pipe_path(tunnel_name))
+        .context("no se pudo abrir el pipe de estado del tunel")?;
+
+    // API de espacio de usuario de WireGuard: `get=1` seguido de linea en
+    // blanco, y responde con pares clave=valor hasta un `errno=`.
+    pipe.write_all(b"get=1\n\n").await.context("no se pudo pedir el estado del tunel")?;
+
+    let mut raw = String::new();
+    pipe.read_to_string(&mut raw).await.context("no se pudo leer el estado del tunel")?;
+
+    parse_tunnel_status(&raw).context("respuesta del tunel ilegible")
+}
+
+/// Convierte la respuesta de `get=1` en el estado que entiende la GUI.
+///
+/// Separado de la lectura del pipe a proposito: asi se puede probar con
+/// respuestas reales capturadas, sin WireGuard instalado ni tunel levantado.
+fn parse_tunnel_status(raw: &str) -> Result<svc_ipc::WireGuardTunnelStatus> {
+    let mut last_handshake_epoch: Option<u64> = None;
+    let mut rx_bytes = 0u64;
+    let mut tx_bytes = 0u64;
+    let mut errno: Option<i64> = None;
+
+    for line in raw.lines() {
+        let Some((key, value)) = line.split_once('=') else { continue };
+        match key {
+            // Puede haber varios pares: se queda el handshake mas reciente y se
+            // suman los contadores, que es lo que tiene sentido mostrar como
+            // estado del tunel.
+            "last_handshake_time_sec" => {
+                if let Ok(secs) = value.parse::<u64>() {
+                    if secs > 0 {
+                        last_handshake_epoch = Some(last_handshake_epoch.map_or(secs, |p| p.max(secs)));
+                    }
+                }
+            }
+            "rx_bytes" => rx_bytes += value.parse::<u64>().unwrap_or(0),
+            "tx_bytes" => tx_bytes += value.parse::<u64>().unwrap_or(0),
+            "errno" => errno = value.parse::<i64>().ok(),
+            _ => {}
+        }
+    }
+
+    match errno {
+        Some(0) => {}
+        Some(other) => anyhow::bail!("el tunel devolvio errno={other}"),
+        None => anyhow::bail!("el tunel no devolvio errno"),
+    }
+
+    // El handshake viene como epoch absoluto; a la GUI le sirve mas la
+    // antiguedad. `saturating_sub` porque un reloj movido hacia atras no debe
+    // producir una antiguedad enorme por desbordamiento.
+    let last_handshake_secs_ago = last_handshake_epoch.map(|epoch| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|now| now.as_secs().saturating_sub(epoch))
+            .unwrap_or(0)
+    });
+
+    Ok(svc_ipc::WireGuardTunnelStatus { last_handshake_secs_ago, rx_bytes, tx_bytes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_tunnel_status;
+
+    fn epoch_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[test]
+    fn parses_a_tunnel_that_has_never_completed_a_handshake() {
+        // Recien levantado, WireGuard devuelve 0: no significa "hace mucho"
+        // sino "todavia ninguno". El handshake no ocurre hasta que hay trafico
+        // que enviar, asi que este es el estado normal al arrancar.
+        let raw = "private_key=00\npublic_key=aa\nlast_handshake_time_sec=0\nlast_handshake_time_nsec=0\nrx_bytes=0\ntx_bytes=148\nerrno=0\n";
+        let status = parse_tunnel_status(raw).expect("deberia parsear");
+
+        assert_eq!(status.last_handshake_secs_ago, None);
+        assert_eq!(status.rx_bytes, 0);
+        assert_eq!(status.tx_bytes, 148);
+        assert!(!status.is_alive());
+    }
+
+    #[test]
+    fn a_recent_handshake_counts_as_alive() {
+        let raw = format!(
+            "public_key=aa\nlast_handshake_time_sec={}\nrx_bytes=4096\ntx_bytes=2048\nerrno=0\n",
+            epoch_now() - 5
+        );
+        let status = parse_tunnel_status(&raw).expect("deberia parsear");
+
+        assert!(status.last_handshake_secs_ago.unwrap() <= 10);
+        assert!(status.is_alive());
+        assert_eq!(status.rx_bytes, 4096);
+    }
+
+    #[test]
+    fn an_old_handshake_is_not_alive() {
+        let raw = format!(
+            "last_handshake_time_sec={}\nrx_bytes=0\ntx_bytes=0\nerrno=0\n",
+            epoch_now() - 400
+        );
+        let status = parse_tunnel_status(&raw).expect("deberia parsear");
+
+        assert!(status.last_handshake_secs_ago.unwrap() >= 400);
+        assert!(!status.is_alive(), "400 s supera el umbral de 180 que aplica WireGuard");
+    }
+
+    /// Con varios pares se muestra el handshake mas reciente y la suma de los
+    /// contadores.
+    #[test]
+    fn several_peers_are_aggregated() {
+        let now = epoch_now();
+        let raw = format!(
+            "public_key=aa\nlast_handshake_time_sec={}\nrx_bytes=100\ntx_bytes=200\npublic_key=bb\nlast_handshake_time_sec={}\nrx_bytes=50\ntx_bytes=25\nerrno=0\n",
+            now - 300,
+            now - 10
+        );
+        let status = parse_tunnel_status(&raw).expect("deberia parsear");
+
+        assert!(status.last_handshake_secs_ago.unwrap() <= 15, "deberia ganar el mas reciente");
+        assert_eq!(status.rx_bytes, 150);
+        assert_eq!(status.tx_bytes, 225);
+    }
+
+    #[test]
+    fn an_error_from_the_tunnel_is_reported() {
+        assert!(parse_tunnel_status("errno=1\n").is_err());
+        assert!(
+            parse_tunnel_status("rx_bytes=0\n").is_err(),
+            "sin errno no se puede confiar en la respuesta"
+        );
+    }
 }

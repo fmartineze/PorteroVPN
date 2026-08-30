@@ -92,6 +92,42 @@ pub fn config_password_hash_path() -> PathBuf {
     data_dir().join("config-password.hash")
 }
 
+/// Marcador con el nombre del tunel de WireGuard que hay levantado ahora
+/// mismo, si lo hay.
+///
+/// Existe porque un tunel de WireGuard **sobrevive a la aplicacion**: no es un
+/// proceso hijo, es un servicio de Windows. Si la GUI muere con uno puesto,
+/// queda una VPN activa que ya nadie sabe que existe. Con este fichero, la GUI
+/// lo reconoce al arrancar y pide retirarlo.
+///
+/// Se resuelve asi, y no enumerando servicios desde `PorteroVPNSvc`, para no
+/// meter mas codigo del imprescindible en el proceso que corre como
+/// LocalSystem: mantener minima esa superficie es la decision central del
+/// proyecto.
+pub fn active_tunnel_marker_path() -> PathBuf {
+    run_dir().join("active-tunnel")
+}
+
+pub fn mark_active_tunnel(tunnel_name: &str) -> io::Result<()> {
+    ensure_data_dirs()?;
+    std::fs::write(active_tunnel_marker_path(), tunnel_name)
+}
+
+pub fn clear_active_tunnel_marker() {
+    let _ = std::fs::remove_file(active_tunnel_marker_path());
+}
+
+/// Nombre del tunel que quedo levantado en una ejecucion anterior, si lo hubo.
+pub fn leftover_tunnel() -> Option<String> {
+    let name = std::fs::read_to_string(active_tunnel_marker_path()).ok()?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 /// Se llama desde varios sitios (importar perfil, guardar politica, cambiar
 /// contrasena...) ademas de al arrancar, asi que la reparacion de permisos
 /// -que lanza `icacls` como subproceso- solo se ejecuta una vez por proceso
@@ -110,6 +146,18 @@ pub fn ensure_data_dirs() -> io::Result<()> {
     Ok(())
 }
 
+/// Motor con el que se levanta un perfil. El almacenamiento difiere: OpenVPN
+/// guarda una copia literal del `.ovpn`, mientras que WireGuard sella el
+/// `.conf` con DPAPI porque **siempre** contiene la clave privada del par
+/// (ver `ProfileMeta::config_blob`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VpnKind {
+    #[default]
+    OpenVpn,
+    WireGuard,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProfileMeta {
     pub id: Uuid,
@@ -122,6 +170,29 @@ pub struct ProfileMeta {
     pub credentials_blob: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
     pub last_connected_at: Option<DateTime<Utc>>,
+
+    /// Motor del perfil.
+    ///
+    /// `#[serde(default)]` **es imprescindible**: los `.meta.toml` importados
+    /// antes de que WireGuard existiera no llevan este campo, y sin el atributo
+    /// fallaria su deserializacion. `list_profiles` descarta con un aviso los
+    /// metadatos que no puede leer, asi que el usuario se encontraria la lista
+    /// de conexiones **vacia** y sin explicacion. El valor por defecto es
+    /// OpenVPN, que es lo unico que podian ser.
+    #[serde(default)]
+    pub kind: VpnKind,
+
+    /// El `.conf` de WireGuard entero, sellado con DPAPI. `None` en perfiles
+    /// de OpenVPN.
+    ///
+    /// Se guarda cifrado y no como fichero porque un `.conf` de WireGuard
+    /// contiene siempre `PrivateKey` en claro; dejarlo en disco seria repartir
+    /// la clave del tunel a cualquiera que lea el directorio. Se materializa a
+    /// un fichero temporal solo al conectar, y se borra en cuanto el tunel
+    /// esta levantado (mismo patron que el passfile de un solo uso de la
+    /// management interface, ver `connection::generate_passfile`).
+    #[serde(default)]
+    pub config_blob: Option<Vec<u8>>,
 }
 
 fn profile_meta_path(id: Uuid) -> PathBuf {
@@ -150,10 +221,56 @@ pub fn import_profile(source_path: &Path, display_name: String, remember_credent
         credentials_blob: None,
         created_at: Utc::now(),
         last_connected_at: None,
+        kind: VpnKind::OpenVpn,
+        config_blob: None,
     };
 
     save_profile_meta(&meta)?;
     Ok(meta)
+}
+
+/// Importa un tunel de WireGuard. A diferencia de `import_profile`, **no deja
+/// ningun fichero en `profiles\`**: el `.conf` se sella con DPAPI y viaja
+/// dentro del propio metadato, porque contiene la clave privada del par.
+///
+/// WireGuard no tiene usuario ni contrasena -- autentica con un par de claves
+/// estatico -- asi que no hay nada equivalente a `remember_credentials`.
+pub fn import_wireguard_profile(source_path: &Path, display_name: String) -> io::Result<ProfileMeta> {
+    ensure_data_dirs()?;
+
+    let config = std::fs::read(source_path)?;
+    let sealed = crate::credentials::dpapi::protect(&config)
+        .map_err(|e| io::Error::other(format!("no se pudo proteger la configuracion: {e}")))?;
+
+    let id = Uuid::new_v4();
+    let meta = ProfileMeta {
+        id,
+        display_name,
+        imported_from: source_path.to_path_buf(),
+        // Sin fichero propio: el `.conf` vive cifrado en `config_blob`. Se
+        // deja la ruta que tendria por coherencia con el resto del tipo, pero
+        // nada la lee en los perfiles de WireGuard.
+        stored_ovpn_path: profile_ovpn_path(id),
+        remember_credentials: false,
+        credentials_blob: None,
+        created_at: Utc::now(),
+        last_connected_at: None,
+        kind: VpnKind::WireGuard,
+        config_blob: Some(sealed),
+    };
+
+    save_profile_meta(&meta)?;
+    Ok(meta)
+}
+
+/// Recupera el `.conf` en claro de un perfil de WireGuard.
+pub fn wireguard_config(meta: &ProfileMeta) -> io::Result<Vec<u8>> {
+    let blob = meta
+        .config_blob
+        .as_ref()
+        .ok_or_else(|| io::Error::other("el perfil de WireGuard no tiene configuracion guardada"))?;
+    crate::credentials::dpapi::unprotect(blob)
+        .map_err(|e| io::Error::other(format!("no se pudo descifrar la configuracion: {e}")))
 }
 
 pub fn save_profile_meta(meta: &ProfileMeta) -> io::Result<()> {
@@ -571,6 +688,71 @@ mod tests {
         let mut policy = SecurityPolicy::bootstrap_default();
         let ids: Vec<String> = policy.checks.iter().map(|c| c.id.clone()).collect();
         assert!(!policy.add_missing_checks(ids.iter().map(String::as_str)));
+    }
+
+    /// Los `.meta.toml` importados antes de que existiera WireGuard no tienen
+    /// `kind` ni `config_blob`. Si fallara su deserializacion, `list_profiles`
+    /// los descartaria con un aviso y el usuario se encontraria la lista de
+    /// conexiones vacia sin ninguna explicacion.
+    #[test]
+    fn profiles_imported_before_wireguard_still_load_as_openvpn() {
+        with_temp_program_data(|| {
+            ensure_data_dirs().expect("ensure_data_dirs fallo");
+            let id = Uuid::new_v4();
+            let antiguo = format!(
+                r#"id = "{id}"
+display_name = "Oficina"
+imported_from = 'C:\perfiles\oficina.ovpn'
+stored_ovpn_path = 'C:\ProgramData\PorteroVPN\profiles\{id}.ovpn'
+remember_credentials = false
+created_at = "2026-08-01T09:00:00Z"
+"#
+            );
+            std::fs::write(profiles_dir().join(format!("{id}.meta.toml")), antiguo)
+                .expect("no se pudo escribir el metadato antiguo");
+
+            let profiles = list_profiles().expect("list_profiles fallo");
+            assert_eq!(profiles.len(), 1, "el perfil antiguo se perdio al listar");
+            assert_eq!(profiles[0].kind, VpnKind::OpenVpn);
+            assert_eq!(profiles[0].config_blob, None);
+            assert_eq!(profiles[0].display_name, "Oficina");
+        });
+    }
+
+    /// Importar un tunel de WireGuard no debe dejar la clave privada en disco:
+    /// el `.conf` viaja cifrado dentro del metadato y no se crea fichero
+    /// alguno en `profiles\` aparte de ese.
+    #[test]
+    fn importing_wireguard_seals_the_config_and_leaves_no_plaintext() {
+        with_temp_program_data(|| {
+            let source = tempfile::NamedTempFile::new().expect("no se pudo crear .conf temporal");
+            let contenido = "[Interface]\nPrivateKey = CLAVE-SECRETA-DE-PRUEBA\nAddress = 10.0.0.2/32\n";
+            std::fs::write(source.path(), contenido).unwrap();
+
+            let meta = import_wireguard_profile(source.path(), "Tunel".to_string())
+                .expect("import_wireguard_profile fallo");
+
+            assert_eq!(meta.kind, VpnKind::WireGuard);
+            assert!(!meta.remember_credentials, "WireGuard no tiene credenciales que recordar");
+
+            // El blob no puede parecerse al texto en claro.
+            let blob = meta.config_blob.as_ref().expect("no se guardo la configuracion");
+            assert!(
+                !blob.windows(contenido.len()).any(|w| w == contenido.as_bytes()),
+                "la configuracion quedo en claro dentro del blob"
+            );
+
+            // Y se recupera identica.
+            let recuperado = wireguard_config(&meta).expect("no se pudo descifrar");
+            assert_eq!(recuperado, contenido.as_bytes());
+
+            // En `profiles\` solo debe estar el metadato.
+            let ficheros: Vec<String> = std::fs::read_dir(profiles_dir())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+                .collect();
+            assert_eq!(ficheros, vec![format!("{}.meta.toml", meta.id)]);
+        });
     }
 
     #[test]

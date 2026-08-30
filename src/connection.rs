@@ -40,6 +40,11 @@ pub enum AppEvent {
     ReconnectLoop(u32),
     Disconnected,
     Error(String),
+    /// Estado del tunel de WireGuard tras cada sondeo: segundos desde el
+    /// ultimo handshake, o `None` si todavia no ha habido ninguno o no se pudo
+    /// consultar. Es lo que certifica que el tunel funciona AHORA, no que
+    /// funciono alguna vez.
+    TunnelStatus { last_handshake_secs_ago: Option<u64> },
 }
 
 /// Extremos que la UI usa para interactuar con una conexion en curso.
@@ -167,6 +172,20 @@ async fn run_connection(
     // `forward_raw_event`. Un solo fichero para todos los intentos de esta
     // sesion (incluidos los que se abandonan por colgados).
     let mut log_file = open_connection_log_file(profile.id);
+
+    // Aqui se bifurca por motor. Lo de arriba -- comprobaciones de seguridad y
+    // log -- es comun y no depende del transporte; lo de abajo no se parece en
+    // nada entre los dos.
+    //
+    // No hay un trait `VpnBackend` a proposito: OpenVPN se conduce por eventos
+    // que llegan solos de su management interface, y WireGuard por sondeo,
+    // porque no tiene canal de control. Meterlos en una interfaz comun daria
+    // una abstraccion falsa que habria que deshacer al primer cambio.
+    if profile.kind == storage::VpnKind::WireGuard {
+        run_wireguard_connection(&profile, &events, &mut cancel_rx, log_file.as_mut()).await;
+        let _ = events.send(AppEvent::Disconnected);
+        return;
+    }
 
     // Credenciales conocidas para toda la conexion (guardadas o pedidas al
     // usuario la primera vez que hagan falta): se recuerdan aqui, fuera del
@@ -765,4 +784,173 @@ fn generate_passfile() -> io::Result<(PathBuf, String)> {
     let path = storage::run_dir().join(format!("{}.passfile", Uuid::new_v4()));
     std::fs::write(&path, &secret)?;
     Ok((path, secret))
+}
+
+// ---------------------------------------------------------------------------
+// WireGuard
+// ---------------------------------------------------------------------------
+
+/// Cada cuanto preguntarle al servicio por el estado del tunel.
+///
+/// WireGuard no empuja eventos: no tiene canal de control, asi que la unica
+/// forma de saber si el tunel vive es preguntar. Cada consulta es una lectura
+/// del pipe del tunel a traves de `PorteroVPNSvc`, barata.
+const WG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Cuanto esperar al primer handshake antes de dar el intento por fallido.
+///
+/// El handshake no ocurre al levantar el tunel, sino cuando hay trafico que
+/// enviar. Los perfiles detras de NAT suelen llevar `PersistentKeepalive` y
+/// entonces llega en segundos; sin el puede tardar mas, y por eso el margen es
+/// generoso comparado con `ATTEMPT_STALL_TIMEOUT`.
+const WG_FIRST_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Levanta un tunel de WireGuard y lo vigila hasta que el usuario cancela.
+///
+/// A diferencia de OpenVPN no hay proceso que vigilar: el tunel es un servicio
+/// de Windows que `wireguard.exe` registra y que **sobrevive a esta
+/// aplicacion**. De ahi el marcador de `storage::mark_active_tunnel`: si la GUI
+/// muere aqui, el proximo arranque sabe que hay un tunel que retirar.
+async fn run_wireguard_connection(
+    profile: &ProfileMeta,
+    events: &mpsc::UnboundedSender<AppEvent>,
+    cancel_rx: &mut watch::Receiver<bool>,
+    mut log_file: Option<&mut File>,
+) {
+    let tunnel_name = svc_ipc::wireguard_path::tunnel_name_for(&profile.id.simple().to_string());
+
+    let _ = events.send(AppEvent::Connecting { last_state: t(Msg::ConnStarting).to_string() });
+
+    // El `.conf` vive cifrado en el metadato; hay que materializarlo para que
+    // wireguard.exe pueda leerlo, y borrarlo en cuanto termine de usarlo.
+    let config_path = match materialize_wireguard_config(profile, &tunnel_name) {
+        Ok(path) => path,
+        Err(e) => {
+            let _ = events.send(AppEvent::Error(i18n::could_not_prepare_connection(&e.to_string())));
+            return;
+        }
+    };
+
+    let start = SvcClient::start_wireguard_tunnel(
+        &config_path.to_string_lossy(),
+        &tunnel_name,
+    )
+    .await;
+
+    // Se borra pase lo que pase: contiene la clave privada del par y no debe
+    // quedarse en disco ni un momento mas del necesario.
+    let _ = std::fs::remove_file(&config_path);
+
+    if let Err(e) = start {
+        let _ = events.send(AppEvent::Error(e.to_string()));
+        return;
+    }
+    let _ = storage::mark_active_tunnel(&tunnel_name);
+    log_line(log_file.as_deref_mut(), &format!("tunel {tunnel_name} levantado"));
+
+    monitor_wireguard_tunnel(&tunnel_name, events, cancel_rx, log_file).await;
+
+    if let Err(e) = SvcClient::stop_wireguard_tunnel(&tunnel_name).await {
+        tracing::warn!(error = %e, tunnel_name, "no se pudo retirar el tunel de WireGuard");
+    }
+    storage::clear_active_tunnel_marker();
+}
+
+/// Escribe el `.conf` en claro a `run\`, con el patron de un solo uso del
+/// passfile de la management interface (ver `generate_passfile`).
+///
+/// **El nombre del fichero importa**: `wireguard.exe /installtunnelservice`
+/// bautiza el tunel -- y con el, el adaptador de red -- con el nombre base del
+/// `.conf`. Tiene que ser exactamente `tunnel_name`.
+fn materialize_wireguard_config(profile: &ProfileMeta, tunnel_name: &str) -> io::Result<PathBuf> {
+    let config = storage::wireguard_config(profile)?;
+    storage::ensure_data_dirs()?;
+    let path = storage::run_dir().join(format!("{tunnel_name}.conf"));
+    std::fs::write(&path, config)?;
+    Ok(path)
+}
+
+/// Sondea el tunel hasta que el usuario cancela.
+///
+/// Es donde vive el indicador que pidio el usuario: no basta con "levantado",
+/// hay que certificar que sigue vivo. WireGuard renueva el handshake cada 120 s
+/// y descarta el tunel a los 180; mientras el ultimo handshake sea mas reciente
+/// que eso, el tunel funciona **ahora**.
+async fn monitor_wireguard_tunnel(
+    tunnel_name: &str,
+    events: &mpsc::UnboundedSender<AppEvent>,
+    cancel_rx: &mut watch::Receiver<bool>,
+    mut log_file: Option<&mut File>,
+) {
+    let mut connected_announced = false;
+    let waiting_since = tokio::time::Instant::now();
+
+    loop {
+        // La cancelacion se escucha en el mismo `select` que la espera. Una
+        // espera que no la escucha deja la conexion colgada con el tunel
+        // puesto -- ya paso con la peticion de credenciales de OpenVPN.
+        tokio::select! {
+            changed = cancel_rx.changed() => {
+                if changed.is_err() || *cancel_rx.borrow() {
+                    log_line(log_file.as_deref_mut(), "cancelado por el usuario");
+                    return;
+                }
+            }
+            _ = tokio::time::sleep(WG_POLL_INTERVAL) => {}
+        }
+
+        let status = match SvcClient::query_wireguard_status(tunnel_name).await {
+            Ok(status) => status,
+            Err(e) => {
+                // Que el servicio no sepa responder no significa que el tunel
+                // este caido, pero tampoco se puede certificar que viva: se
+                // avisa y se sigue sondeando.
+                tracing::warn!(error = %e, tunnel_name, "no se pudo consultar el estado del tunel");
+                let _ = events.send(AppEvent::TunnelStatus { last_handshake_secs_ago: None });
+                continue;
+            }
+        };
+
+        let _ = events.send(AppEvent::ByteCount {
+            bytes_in: status.rx_bytes,
+            bytes_out: status.tx_bytes,
+        });
+        let _ = events.send(AppEvent::TunnelStatus {
+            last_handshake_secs_ago: status.last_handshake_secs_ago,
+        });
+
+        if status.is_alive() {
+            if !connected_announced {
+                connected_announced = true;
+                log_line(log_file.as_deref_mut(), "primer handshake completado");
+                // WireGuard no reparte IPs por el tunel como hace OpenVPN: las
+                // direcciones estan en el propio `.conf`. Los dos campos van
+                // vacios y la UI muestra el estado del handshake en su lugar.
+                let _ = events.send(AppEvent::Connected { local_ip: None, remote_ip: None });
+            }
+            continue;
+        }
+
+        // Todavia sin handshake: si tarda demasiado, el otro extremo no
+        // responde y no tiene sentido seguir esperando.
+        if !connected_announced && waiting_since.elapsed() >= WG_FIRST_HANDSHAKE_TIMEOUT {
+            log_line(log_file.as_deref_mut(), "sin handshake dentro del plazo");
+            let _ = events.send(AppEvent::Error(t(Msg::ErrWireGuardNoHandshake).to_string()));
+            return;
+        }
+
+        // Ya hubo handshake antes y ahora esta caducado: el tunel se mantiene a
+        // proposito (WireGuard reintenta solo y suele recuperarse al volver la
+        // red). El indicador ya se puso en rojo con el evento de arriba.
+    }
+}
+
+/// Anota una linea en el log de conexion y la manda a la ventana de log en
+/// vivo, para que un tunel de WireGuard deje el mismo rastro que uno de
+/// OpenVPN.
+fn log_line(log_file: Option<&mut File>, text: &str) {
+    if let Some(file) = log_file {
+        let _ = writeln!(file, "{text}");
+    }
+    tracing::info!("{text}");
 }

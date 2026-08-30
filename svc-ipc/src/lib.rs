@@ -14,6 +14,7 @@
 //! el motor de checks de la GUI.
 
 pub mod openvpn_path;
+pub mod wireguard_path;
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,27 @@ pub enum IpcRequest {
     /// Estado de BitLocker en el volumen de arranque -- ver comentario del
     /// modulo.
     QueryBitLocker,
+
+    /// `wireguard.exe /installtunnelservice <config_path>`. WireGuard registra
+    /// el tunel como servicio propio de Windows; no queda proceso hijo que
+    /// vigilar, a diferencia de `StartProfile`.
+    ///
+    /// `config_path` apunta a un fichero temporal que la GUI acaba de
+    /// materializar y borrara en cuanto el tunel este levantado: el `.conf`
+    /// contiene la clave privada del par y no se guarda en claro (ver
+    /// `ProfileMeta::config_blob` en el crate principal).
+    StartWireGuardTunnel { config_path: String, tunnel_name: String },
+    /// `wireguard.exe /uninstalltunnelservice <tunnel_name>`.
+    StopWireGuardTunnel { tunnel_name: String },
+    /// Estado del tunel: cuando fue el ultimo handshake y cuanto se ha
+    /// transferido.
+    ///
+    /// Vive aqui por el mismo motivo que `QueryBitLocker`: el pipe de estado
+    /// que expone cada tunel de WireGuard esta restringido a Administradores,
+    /// y la GUI corre deliberadamente sin privilegios. El servicio solo
+    /// informa de lo observado; interpretar si el tunel esta sano sigue siendo
+    /// cosa de la GUI.
+    QueryWireGuardStatus { tunnel_name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +78,35 @@ pub enum IpcResponse {
     Pong,
     Error { message: String },
     BitLockerStatus(BitLockerVolumeStatus),
+    WireGuardStarted,
+    WireGuardStatus(WireGuardTunnelStatus),
+}
+
+/// Lo que el servicio observa de un tunel de WireGuard.
+///
+/// El dato que importa es `last_handshake_secs_ago`. WireGuard no tiene
+/// sesion: no existe "conectado" como estado persistente, solo un handshake
+/// que el protocolo renueva cada 120 s y da por muerto a los 180 s. Un
+/// handshake reciente certifica que el tunel funciona **ahora**, que es mas de
+/// lo que dice el `CONNECTED` de OpenVPN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireGuardTunnelStatus {
+    /// Segundos desde el ultimo handshake. `None` si todavia no ha habido
+    /// ninguno, que es lo normal justo despues de levantar el tunel: el
+    /// handshake no ocurre al arrancar, sino cuando hay trafico que enviar.
+    pub last_handshake_secs_ago: Option<u64>,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
+impl WireGuardTunnelStatus {
+    /// A partir de aqui WireGuard descarta el tunel (`REJECT_AFTER_TIME`).
+    pub const STALE_AFTER_SECS: u64 = 180;
+
+    /// Si el tunel esta verificado ahora mismo.
+    pub fn is_alive(&self) -> bool {
+        self.last_handshake_secs_ago.is_some_and(|s| s < Self::STALE_AFTER_SECS)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

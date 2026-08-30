@@ -84,19 +84,45 @@ struct ErrorModal {
 struct ActiveConnection {
     profile_id: Uuid,
     display_name: String,
+    kind: storage::VpnKind,
     phase: ConnectionPhase,
     check_results: Vec<CheckRunResult>,
     log_lines: VecDeque<String>,
     bytes_in: u64,
     bytes_out: u64,
+    /// Segundos desde el ultimo handshake del tunel de WireGuard. `None`
+    /// mientras no haya habido ninguno.
+    ///
+    /// Es lo que certifica que el tunel funciona **ahora**: WireGuard no tiene
+    /// sesion, asi que "conectado" no es un estado que persista, solo un
+    /// handshake que se renueva cada 120 s y caduca a los 180. Sin dato
+    /// equivalente en OpenVPN, donde siempre vale `None`.
+    tunnel_handshake_secs_ago: Option<u64>,
     handle: ConnectionHandle,
     events_rx: tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     pending_credentials: Option<CredentialForm>,
 }
 
+/// Copia de lo que hace falta para pintar la capa de conexion activa.
+///
+/// Existe porque el cuerpo del `Area` necesita `&mut self` y no puede seguir
+/// prestando `self.active`. Agrupar los seis datos aqui, en vez de pasarlos
+/// sueltos, deja la firma legible.
+struct ConnectionView {
+    check_results: Vec<CheckRunResult>,
+    phase: ConnectionPhase,
+    kind: storage::VpnKind,
+    tunnel_handshake_secs_ago: Option<u64>,
+    bytes_in: u64,
+    bytes_out: u64,
+}
+
 struct ImportDraft {
     source_path: std::path::PathBuf,
     display_name: String,
+    kind: storage::VpnKind,
+    /// Los tres campos de credenciales solo aplican a OpenVPN: WireGuard
+    /// autentica con un par de claves dentro del propio `.conf`.
     remember_credentials: bool,
     username: String,
     password: String,
@@ -179,6 +205,9 @@ pub struct PorteroApp {
     /// comprueba una vez al inicio; el flujo de instalacion (ver
     /// `openvpn_install`) lo reconsulta al terminar.
     openvpn_installed: bool,
+    /// Igual que el anterior pero para WireGuard. Se consulta al arrancar y
+    /// tras instalarlo desde la propia aplicacion.
+    wireguard_installed: bool,
     openvpn_install_state: OpenVpnInstallUiState,
     openvpn_install_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InstallEvent>>,
 
@@ -235,6 +264,18 @@ impl PorteroApp {
         };
         let service_state = service_ctl::query_state();
         let service_warning = rt.block_on(SvcClient::ping()).err().map(|e| e.to_string());
+
+        // Un tunel de WireGuard no es un proceso hijo: es un servicio de
+        // Windows que sobrevive a esta aplicacion. Si la ejecucion anterior
+        // murio con uno levantado, seguiria habiendo una VPN activa que ya
+        // nadie sabe que existe. El marcador de `run\active-tunnel` lo delata.
+        if let Some(leftover) = storage::leftover_tunnel() {
+            tracing::warn!(tunnel = %leftover, "quedo un tunel de WireGuard de una ejecucion anterior, retirandolo");
+            if let Err(e) = rt.block_on(SvcClient::stop_wireguard_tunnel(&leftover)) {
+                tracing::warn!(error = %e, tunnel = %leftover, "no se pudo retirar el tunel huerfano");
+            }
+            storage::clear_active_tunnel_marker();
+        }
         let quit_requested = Arc::new(AtomicBool::new(false));
         let preferences = storage::load_preferences().unwrap_or_else(|e| {
             tracing::warn!(error = %e, "no se pudo cargar preferences.toml, usando valores por defecto");
@@ -266,6 +307,7 @@ impl PorteroApp {
             service_state,
             service_action_error: None,
             openvpn_installed: openvpn_install::is_installed(),
+            wireguard_installed: svc_ipc::wireguard_path::is_installed(),
             openvpn_install_state: OpenVpnInstallUiState::Idle,
             openvpn_install_rx: None,
             _tray: tray::init(quit_requested.clone()),
@@ -402,6 +444,9 @@ impl PorteroApp {
                         profile_id: active.profile_id,
                     });
                 }
+                AppEvent::TunnelStatus { last_handshake_secs_ago } => {
+                    active.tunnel_handshake_secs_ago = last_handshake_secs_ago;
+                }
                 AppEvent::Disconnected => {
                     self.active = None;
                     return;
@@ -428,27 +473,34 @@ impl PorteroApp {
         self.active = Some(ActiveConnection {
             profile_id: profile.id,
             display_name: profile.display_name.clone(),
+            kind: profile.kind,
             phase: ConnectionPhase::RunningChecks,
             check_results: Vec::new(),
             log_lines: VecDeque::new(),
             bytes_in: 0,
             bytes_out: 0,
+            tunnel_handshake_secs_ago: None,
             handle,
             events_rx,
             pending_credentials: None,
         });
     }
 
-    /// Abre el selector de fichero nativo para importar un perfil `.ovpn`
-    /// (disparado desde el boton "+ Importar perfil .ovpn" del menu
-    /// superior). Si el usuario elige un fichero, prepara el borrador que
+    /// Abre el selector de fichero nativo para importar un perfil, con el
+    /// filtro del motor correspondiente (disparado desde "+ovpn" o "+wg" del
+    /// menu superior). Si el usuario elige un fichero, prepara el borrador que
     /// `render_import_dialog` pinta a continuacion.
-    fn request_profile_import(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter("OpenVPN", &["ovpn"]).pick_file() {
+    fn request_profile_import(&mut self, kind: storage::VpnKind) {
+        let (filter_name, extension) = match kind {
+            storage::VpnKind::OpenVpn => ("OpenVPN", "ovpn"),
+            storage::VpnKind::WireGuard => ("WireGuard", "conf"),
+        };
+        if let Some(path) = rfd::FileDialog::new().add_filter(filter_name, &[extension]).pick_file() {
             let default_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(t(Msg::DefaultProfileName)).to_string();
             self.import_draft = Some(ImportDraft {
                 source_path: path,
                 display_name: default_name,
+                kind,
                 remember_credentials: false,
                 username: String::new(),
                 password: String::new(),
@@ -571,11 +623,24 @@ impl PorteroApp {
                     self.screen = Screen::Connections;
                 }
                 // `selectable_label` con `false` fijo (nunca "seleccionado"):
-                // es una accion, no una pestana, pero con la misma
-                // apariencia que Conexiones para que el menu superior quede
-                // uniforme.
-                if ui.selectable_label(false, t(Msg::NavImportOvpn)).clicked() {
-                    self.request_profile_import();
+                // son acciones, no pestanas, pero con la misma apariencia que
+                // Conexiones para que el menu superior quede uniforme. El
+                // texto va corto ("+ovpn", "+wg") porque los dos tienen que
+                // caber junto a "Conexiones" en 380px; el hint dice cual es
+                // cual, igual que hace la rueda dentada.
+                if ui
+                    .selectable_label(false, t(Msg::NavImportOvpn))
+                    .on_hover_text(t(Msg::NavImportOvpnTip))
+                    .clicked()
+                {
+                    self.request_profile_import(storage::VpnKind::OpenVpn);
+                }
+                if ui
+                    .selectable_label(false, t(Msg::NavImportWg))
+                    .on_hover_text(t(Msg::NavImportWgTip))
+                    .clicked()
+                {
+                    self.request_profile_import(storage::VpnKind::WireGuard);
                 }
                 // Configuracion, sola, justificada del todo al borde
                 // derecho: como rueda dentada en vez de texto para que
@@ -658,13 +723,24 @@ impl PorteroApp {
             } else {
                 t(Msg::StatusChooseConnection).to_string()
             };
-            let can_connect = service_ready && self.openvpn_installed && selected.is_some();
+            // El motor que hace falta depende del perfil elegido: no tiene
+            // sentido exigir OpenVPN para conectar un tunel de WireGuard, ni al
+            // reves. Sin perfil elegido no se exige ninguno todavia.
+            let engine_ready = match selected.map(|p| p.kind) {
+                Some(storage::VpnKind::WireGuard) => self.wireguard_installed,
+                Some(storage::VpnKind::OpenVpn) => self.openvpn_installed,
+                None => true,
+            };
+            let can_connect = service_ready && engine_ready && selected.is_some();
             let reason = if !service_ready {
                 Some(t(Msg::TipInstallService))
-            } else if !self.openvpn_installed {
-                Some(t(Msg::TipInstallOpenVpn))
             } else if selected.is_none() {
                 Some(t(Msg::TipChooseConnection))
+            } else if !engine_ready {
+                match selected.map(|p| p.kind) {
+                    Some(storage::VpnKind::WireGuard) => Some(t(Msg::TipInstallWireGuard)),
+                    _ => Some(t(Msg::TipInstallOpenVpn)),
+                }
             } else {
                 None
             };
@@ -778,6 +854,15 @@ impl PorteroApp {
             ui.separator();
         }
 
+        // El aviso de WireGuard solo sale si de verdad hace falta: a quien solo
+        // use OpenVPN no le interesa que le pidan instalar otro motor. Es lo
+        // contrario del de arriba, que se muestra siempre porque OpenVPN era el
+        // unico motor y sigue siendo el habitual.
+        if !self.wireguard_installed && self.profiles.iter().any(|p| p.kind == storage::VpnKind::WireGuard) {
+            ui.colored_label(theme::WARNING, t(Msg::BannerWireGuardMissing));
+            ui.separator();
+        }
+
         if let Some(error) = &self.import_error {
             ui.colored_label(theme::DANGER, error);
         }
@@ -840,9 +925,21 @@ impl PorteroApp {
         }
 
         let (status_color, status_text) = if is_active {
-            match &self.active.as_ref().unwrap().phase {
+            let active = self.active.as_ref().unwrap();
+            // Un tunel de WireGuard puede estar levantado y muerto a la vez: el
+            // servicio sigue puesto pero el handshake caduco. La fila tiene que
+            // decir lo mismo que la capa de estado, o el usuario veria verde
+            // aqui y rojo ahi.
+            let wireguard_stale = active.kind == storage::VpnKind::WireGuard
+                && active
+                    .tunnel_handshake_secs_ago
+                    .is_none_or(|s| s >= svc_ipc::WireGuardTunnelStatus::STALE_AFTER_SECS);
+            match &active.phase {
                 ConnectionPhase::RunningChecks => (theme::WARNING, t(Msg::RowChecking)),
                 ConnectionPhase::Connecting { .. } => (theme::WARNING, t(Msg::RowConnecting)),
+                ConnectionPhase::Connected { .. } if wireguard_stale => {
+                    (theme::DANGER, t(Msg::WgTunnelStale))
+                }
                 ConnectionPhase::Connected { .. } => (theme::SUCCESS, t(Msg::RowConnected)),
                 ConnectionPhase::ChecksFailed | ConnectionPhase::Failed | ConnectionPhase::AuthFailed => {
                     (theme::DANGER, t(Msg::RowError))
@@ -932,10 +1029,16 @@ impl PorteroApp {
     fn render_active_connection_overlay(&mut self, ui: &mut egui::Ui) {
         let Some(active) = &self.active else { return };
         let display_name = active.display_name.clone();
-        let check_results = active.check_results.clone();
-        let phase = active.phase.clone();
-        let bytes_in = active.bytes_in;
-        let bytes_out = active.bytes_out;
+        // Instantanea propia: la capa se pinta dentro de un `Area` cuyo cuerpo
+        // necesita `&mut self`, asi que no puede seguir prestando `active`.
+        let view = ConnectionView {
+            check_results: active.check_results.clone(),
+            phase: active.phase.clone(),
+            kind: active.kind,
+            tunnel_handshake_secs_ago: active.tunnel_handshake_secs_ago,
+            bytes_in: active.bytes_in,
+            bytes_out: active.bytes_out,
+        };
 
         // Todo el panel central menos la barra inferior, con un margen que
         // deja asomar la lista por los lados: se lee como algo puesto encima,
@@ -971,7 +1074,7 @@ impl PorteroApp {
                         ui.set_width(rect.width() - 24.0);
                         ui.set_height(rect.height() - 20.0);
 
-                        let title = if matches!(phase, ConnectionPhase::Connected { .. }) {
+                        let title = if matches!(view.phase, ConnectionPhase::Connected { .. }) {
                             i18n::connected_to(&display_name)
                         } else {
                             i18n::connecting_to(&display_name)
@@ -982,14 +1085,7 @@ impl PorteroApp {
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                self.render_active_connection_body(
-                                    ui,
-                                    &check_results,
-                                    &phase,
-                                    bytes_in,
-                                    bytes_out,
-                                    &mut show_log_requested,
-                                );
+                                self.render_active_connection_body(ui, &view, &mut show_log_requested);
                             });
                     });
             });
@@ -1005,12 +1101,13 @@ impl PorteroApp {
     fn render_active_connection_body(
         &self,
         ui: &mut egui::Ui,
-        check_results: &[CheckRunResult],
-        phase: &ConnectionPhase,
-        bytes_in: u64,
-        bytes_out: u64,
+        view: &ConnectionView,
         show_log_requested: &mut bool,
     ) {
+            let ConnectionView { check_results, phase, kind, tunnel_handshake_secs_ago, bytes_in, bytes_out } =
+                view;
+            let (kind, tunnel_handshake_secs_ago, bytes_in, bytes_out) =
+                (*kind, *tunnel_handshake_secs_ago, *bytes_in, *bytes_out);
             if !check_results.is_empty() {
                 ui.label(RichText::new(t(Msg::SecurityChecksHeading)).strong());
                 for result in check_results {
@@ -1044,9 +1141,17 @@ impl PorteroApp {
                 }
                 ConnectionPhase::Connected { local_ip, remote_ip, since } => {
                     let elapsed = since.elapsed();
-                    ui.colored_label(theme::SUCCESS, t(Msg::RowConnected));
-                    ui.label(i18n::local_ip(local_ip.as_deref().unwrap_or("-")));
-                    ui.label(i18n::server_ip(remote_ip.as_deref().unwrap_or("-")));
+                    if kind == storage::VpnKind::WireGuard {
+                        // WireGuard no reparte IP por el tunel como OpenVPN
+                        // (estan en el propio .conf), y "conectado" no es un
+                        // estado que persista: lo que hay que ensenar es si el
+                        // handshake sigue vivo.
+                        render_tunnel_health(ui, tunnel_handshake_secs_ago);
+                    } else {
+                        ui.colored_label(theme::SUCCESS, t(Msg::RowConnected));
+                        ui.label(i18n::local_ip(local_ip.as_deref().unwrap_or("-")));
+                        ui.label(i18n::server_ip(remote_ip.as_deref().unwrap_or("-")));
+                    }
                     ui.label(i18n::connected_time(elapsed.as_secs()));
                     ui.label(i18n::traffic(&format_bytes(bytes_in), &format_bytes(bytes_out)));
                 }
@@ -1212,23 +1317,35 @@ impl PorteroApp {
         let mut confirmed = false;
         let mut cancelled = false;
 
-        egui::Window::new(t(Msg::ImportTitle)).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+        let is_wireguard = draft.kind == storage::VpnKind::WireGuard;
+        let title = if is_wireguard { t(Msg::ImportWgTitle) } else { t(Msg::ImportTitle) };
+
+        egui::Window::new(title).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
             ui.label(i18n::file_label(&draft.source_path.display().to_string()));
             ui.horizontal(|ui| {
                 ui.label(t(Msg::FieldName));
                 ui.text_edit_singleline(&mut draft.display_name);
             });
-            ui.checkbox(&mut draft.remember_credentials, t(Msg::RememberForProfile));
 
-            if draft.remember_credentials {
-                ui.horizontal(|ui| {
-                    ui.label(t(Msg::FieldUsername));
-                    ui.text_edit_singleline(&mut draft.username);
-                });
-                ui.horizontal(|ui| {
-                    ui.label(t(Msg::FieldPassword));
-                    ui.add(egui::TextEdit::singleline(&mut draft.password).password(true));
-                });
+            // WireGuard no tiene usuario ni contrasena: autentica con un par de
+            // claves que ya viene dentro del `.conf`. Ofrecer esos campos seria
+            // mentir sobre lo que hace el perfil, asi que se explica en su
+            // lugar por que no estan.
+            if is_wireguard {
+                ui.label(RichText::new(t(Msg::ImportWgNoCredentials)).small().weak());
+            } else {
+                ui.checkbox(&mut draft.remember_credentials, t(Msg::RememberForProfile));
+
+                if draft.remember_credentials {
+                    ui.horizontal(|ui| {
+                        ui.label(t(Msg::FieldUsername));
+                        ui.text_edit_singleline(&mut draft.username);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(t(Msg::FieldPassword));
+                        ui.add(egui::TextEdit::singleline(&mut draft.password).password(true));
+                    });
+                }
             }
 
             let can_import = !draft.remember_credentials || (!draft.username.is_empty() && !draft.password.is_empty());
@@ -1244,7 +1361,17 @@ impl PorteroApp {
 
         if confirmed {
             let draft = self.import_draft.take().unwrap();
-            match storage::import_profile(&draft.source_path, draft.display_name, draft.remember_credentials) {
+            let imported = match draft.kind {
+                storage::VpnKind::OpenVpn => {
+                    storage::import_profile(&draft.source_path, draft.display_name, draft.remember_credentials)
+                }
+                // Sella el `.conf` con DPAPI y no deja fichero en `profiles\`:
+                // contiene la clave privada del par.
+                storage::VpnKind::WireGuard => {
+                    storage::import_wireguard_profile(&draft.source_path, draft.display_name)
+                }
+            };
+            match imported {
                 Ok(mut meta) => {
                     if draft.remember_credentials {
                         let creds = Credentials { username: draft.username, password: draft.password };
@@ -1696,6 +1823,44 @@ fn draw_modal_backdrop(ctx: &egui::Context) {
             ui.allocate_rect(screen, egui::Sense::click());
             ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(150));
         });
+}
+
+/// Indicador que certifica si el tunel de WireGuard funciona **ahora**.
+///
+/// Es la diferencia de fondo con OpenVPN: alli "conectado" es un estado que el
+/// servidor confirma una vez y persiste. WireGuard no tiene sesion -- solo un
+/// handshake que el protocolo renueva cada 120 s y da por caducado a los 180
+/// (`WireGuardTunnelStatus::STALE_AFTER_SECS`) --, asi que decir "conectado" a
+/// secas seria afirmar mas de lo que se sabe. Lo honesto es ensenar cuando fue
+/// el ultimo handshake.
+///
+/// Que no haya habido ninguno todavia no es un fallo: el handshake no ocurre al
+/// levantar el tunel, sino cuando hay trafico que enviar.
+fn render_tunnel_health(ui: &mut egui::Ui, last_handshake_secs_ago: Option<u64>) {
+    let stale_after = svc_ipc::WireGuardTunnelStatus::STALE_AFTER_SECS;
+
+    match last_handshake_secs_ago {
+        Some(secs) if secs < stale_after => {
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::SUCCESS, "\u{2714}");
+                ui.colored_label(theme::SUCCESS, RichText::new(t(Msg::WgTunnelVerified)).strong());
+            });
+            ui.label(i18n::last_handshake(secs));
+        }
+        Some(secs) => {
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::DANGER, "\u{2716}");
+                ui.colored_label(theme::DANGER, RichText::new(t(Msg::WgTunnelStale)).strong());
+            });
+            ui.label(i18n::last_handshake(secs));
+        }
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.colored_label(theme::WARNING, t(Msg::WgWaitingHandshake));
+            });
+        }
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
