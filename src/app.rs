@@ -35,19 +35,16 @@ const MAX_LOG_LINES: usize = 2000;
 /// compartida y no un numero suelto dentro de la funcion.
 const BOTTOM_BAR_HEIGHT: f32 = 90.0;
 
-/// Indicador de estado a la izquierda de cada conexion: candado abierto
-/// mientras no hay tunel y cerrado cuando lo hay. El color lo pone la fase
-/// (gris en reposo, ambar conectando, verde conectado, rojo en error), asi que
-/// el icono aporta la lectura de un vistazo y el color el detalle.
+/// Indicador a la izquierda de cada conexion. El estado lo da el color de la
+/// fase (gris en reposo, ambar conectando, verde conectado, rojo en error).
 ///
-/// **No volver a un circulo `\u{25CF}`**: ese glifo solo existe en
+/// **No volver al circulo U+25CF**: ese glifo solo existe en
 /// `Hack-Regular.ttf`, que egui usa unicamente en la familia monoespaciada. En
 /// la proporcional -que es la de estas etiquetas- la cadena es Ubuntu-Light ->
 /// NotoEmoji -> emoji-icon-font, ninguna de las cuales lo tiene, asi que se
-/// pintaba el cuadrado de "carater ausente". Estos dos si estan en NotoEmoji y
-/// emoji-icon-font.
-const ICON_TUNNEL_OPEN: &str = "\u{1F513}";
-const ICON_TUNNEL_CLOSED: &str = "\u{1F512}";
+/// pintaba el cuadrado de "caracter ausente". Este si esta en las dos ultimas,
+/// verificado leyendo su tabla cmap.
+const ICON_CONNECTION: &str = "\u{1F50C}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -842,17 +839,17 @@ impl PorteroApp {
             ui.painter().rect_stroke(row_rect, egui::Rounding::same(6.0), egui::Stroke::new(1.5_f32, theme::ACCENT));
         }
 
-        let (status_color, status_text, status_icon) = if is_active {
+        let (status_color, status_text) = if is_active {
             match &self.active.as_ref().unwrap().phase {
-                ConnectionPhase::RunningChecks => (theme::WARNING, t(Msg::RowChecking), ICON_TUNNEL_OPEN),
-                ConnectionPhase::Connecting { .. } => (theme::WARNING, t(Msg::RowConnecting), ICON_TUNNEL_OPEN),
-                ConnectionPhase::Connected { .. } => (theme::SUCCESS, t(Msg::RowConnected), ICON_TUNNEL_CLOSED),
+                ConnectionPhase::RunningChecks => (theme::WARNING, t(Msg::RowChecking)),
+                ConnectionPhase::Connecting { .. } => (theme::WARNING, t(Msg::RowConnecting)),
+                ConnectionPhase::Connected { .. } => (theme::SUCCESS, t(Msg::RowConnected)),
                 ConnectionPhase::ChecksFailed | ConnectionPhase::Failed | ConnectionPhase::AuthFailed => {
-                    (theme::DANGER, t(Msg::RowError), ICON_TUNNEL_OPEN)
+                    (theme::DANGER, t(Msg::RowError))
                 }
             }
         } else {
-            (Color32::GRAY, "", ICON_TUNNEL_OPEN)
+            (Color32::GRAY, "")
         };
 
         let mut edit_requested = false;
@@ -873,7 +870,7 @@ impl PorteroApp {
                 ui.add_space(10.0);
                 // Tamano fijo: los emoji de NotoEmoji vienen mas grandes que el
                 // texto normal y descuadraban el alto de la fila.
-                ui.add(egui::Label::new(RichText::new(status_icon).size(14.0).color(status_color)));
+                ui.add(egui::Label::new(RichText::new(ICON_CONNECTION).size(14.0).color(status_color)));
                 ui.add_space(4.0);
                 ui.add(egui::Label::new(RichText::new(&profile.display_name).strong()).truncate());
 
