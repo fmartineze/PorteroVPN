@@ -47,10 +47,17 @@ software de Mesa 3D.
 Mesa 3D se distribuye bajo licencia **MIT**, con componentes adicionales bajo
 otras licencias permisivas.
 
-> **Pendiente:** el texto de licencia de Mesa no viaja junto al binario en
-> `assets/lavapipe/`. Antes de una distribucion publica hay que añadir ahi el
-> `LICENSE` correspondiente a la build concreta de Lavapipe que se empaqueta, y
-> dejar constancia de su version y procedencia.
+El aviso de licencia vive en [`assets/lavapipe/LICENSE.md`](assets/lavapipe/LICENSE.md)
+y **el instalador lo copia junto al binario**: la MIT obliga a acompañar cada
+copia del software de su aviso, y lo que llega al usuario es el instalador.
+
+La version empaquetada es **Mesa 26.2.0**, identificada en el recurso de version
+del propio DLL.
+
+> **Pendiente:** no consta de donde se obtuvo ese `vulkan_lvp.dll`. Falta
+> registrar su procedencia exacta y copiar junto a el el directorio `licenses/`
+> de la distribucion original, que es donde estan los avisos de copyright de
+> cada componente. Ver el apartado "Pendiente" de ese fichero.
 
 - Proyecto: https://www.mesa3d.org/
 - Licencia: MIT (y otras permisivas para componentes concretos)

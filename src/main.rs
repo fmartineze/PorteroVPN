@@ -12,6 +12,7 @@ mod gpu_fallback;
 mod i18n;
 mod mgmt;
 mod openvpn_install;
+mod wireguard_install;
 mod service_ctl;
 mod single_instance;
 mod storage;

@@ -19,6 +19,7 @@ use crate::connection::{self, AppEvent, ConnectionHandle};
 use crate::credentials::{self, Credentials};
 use crate::i18n::{self, t, Lang, Msg};
 use crate::openvpn_install::{self, InstallEvent};
+use crate::wireguard_install;
 use crate::service_ctl::{self, ServiceInstallState};
 use crate::storage::{self, ProfileMeta, SecurityPolicy};
 use crate::svc_client::SvcClient;
@@ -165,6 +166,7 @@ struct ChangePasswordState {
 /// `openvpn_install`). `Idle` cubre tanto "todavia no se ha pedido" como
 /// "termino bien" -- una vez `Done`, `openvpn_installed` ya vale `true` y el
 /// banner entero deja de pintarse, asi que no hace falta un estado aparte.
+#[derive(Clone)]
 enum OpenVpnInstallUiState {
     Idle,
     Working(String),
@@ -219,6 +221,10 @@ pub struct PorteroApp {
     /// Igual que el anterior pero para WireGuard. Se consulta al arrancar y
     /// tras instalarlo desde la propia aplicacion.
     wireguard_installed: bool,
+    /// Progreso de la instalacion de WireGuard, que se ofrece desde el dialogo
+    /// de importacion de un tunel (no como banner permanente).
+    wireguard_install_state: OpenVpnInstallUiState,
+    wireguard_install_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InstallEvent>>,
     openvpn_install_state: OpenVpnInstallUiState,
     openvpn_install_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InstallEvent>>,
 
@@ -323,6 +329,8 @@ impl PorteroApp {
             service_action_error: None,
             openvpn_installed: openvpn_install::is_installed(),
             wireguard_installed: svc_ipc::wireguard_path::is_installed(),
+            wireguard_install_state: OpenVpnInstallUiState::Idle,
+            wireguard_install_rx: None,
             openvpn_install_state: OpenVpnInstallUiState::Idle,
             openvpn_install_rx: None,
             _tray: tray::init(quit_requested.clone()),
@@ -355,6 +363,37 @@ impl PorteroApp {
         self.openvpn_install_rx = Some(openvpn_install::spawn_install());
         self.openvpn_install_state =
             OpenVpnInstallUiState::Working(t(Msg::InstallSearching).to_string());
+    }
+
+    /// Instalacion de WireGuard, ofrecida desde el dialogo de importacion de un
+    /// tunel. Mismo mecanismo que la de OpenVPN.
+    fn start_wireguard_install(&mut self) {
+        let _guard = self.rt.enter();
+        self.wireguard_install_rx = Some(wireguard_install::spawn_install());
+        self.wireguard_install_state = OpenVpnInstallUiState::Working(t(Msg::WgInstallSearching).to_string());
+    }
+
+    fn drain_wireguard_install_events(&mut self) {
+        let Some(rx) = self.wireguard_install_rx.as_mut() else { return };
+
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                InstallEvent::Status(message) => {
+                    self.wireguard_install_state = OpenVpnInstallUiState::Working(message)
+                }
+                InstallEvent::Done => {
+                    self.wireguard_install_state = OpenVpnInstallUiState::Idle;
+                    self.wireguard_install_rx = None;
+                    self.wireguard_installed = wireguard_install::is_installed();
+                    return;
+                }
+                InstallEvent::Error(message) => {
+                    self.wireguard_install_state = OpenVpnInstallUiState::Error(message);
+                    self.wireguard_install_rx = None;
+                    return;
+                }
+            }
+        }
     }
 
     fn drain_openvpn_install_events(&mut self) {
@@ -534,6 +573,7 @@ impl eframe::App for PorteroApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.drain_events();
         self.drain_openvpn_install_events();
+        self.drain_wireguard_install_events();
 
         // Le hace falta al manejador de eventos del tray (ver
         // `tray::init`/`AppTray::set_main_window`) para poder mostrar la
@@ -1334,8 +1374,10 @@ impl PorteroApp {
 
         let is_wireguard = draft.kind == storage::VpnKind::WireGuard;
         let title = if is_wireguard { t(Msg::ImportWgTitle) } else { t(Msg::ImportTitle) };
-        // Se copia antes del cierre: dentro ya no se puede prestar `self`.
+        // Se copian antes del cierre: dentro ya no se puede prestar `self`.
         let wireguard_installed = self.wireguard_installed;
+        let wg_install_state = self.wireguard_install_state.clone();
+        let mut wg_install_requested = false;
 
         egui::Window::new(title).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
             ui.label(i18n::file_label(&draft.source_path.display().to_string()));
@@ -1358,7 +1400,26 @@ impl PorteroApp {
                 // conviene decirlo antes de que lo descubra al conectar.
                 if !wireguard_installed {
                     ui.add_space(4.0);
-                    ui.colored_label(theme::WARNING, t(Msg::ImportWgNeedsWireGuard));
+                    match &wg_install_state {
+                        OpenVpnInstallUiState::Idle => {
+                            ui.colored_label(theme::WARNING, t(Msg::ImportWgNeedsWireGuard));
+                            if ui.button(t(Msg::BtnInstallWireGuard)).clicked() {
+                                wg_install_requested = true;
+                            }
+                        }
+                        OpenVpnInstallUiState::Working(status) => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(status.clone());
+                            });
+                        }
+                        OpenVpnInstallUiState::Error(error) => {
+                            ui.colored_label(theme::DANGER, i18n::wireguard_install_failed(error));
+                            if ui.button(t(Msg::BtnRetry)).clicked() {
+                                wg_install_requested = true;
+                            }
+                        }
+                    }
                 }
             } else {
                 ui.checkbox(&mut draft.remember_credentials, t(Msg::RememberForProfile));
@@ -1385,6 +1446,10 @@ impl PorteroApp {
                 }
             });
         });
+
+        if wg_install_requested {
+            self.start_wireguard_install();
+        }
 
         if confirmed {
             let draft = self.import_draft.take().unwrap();

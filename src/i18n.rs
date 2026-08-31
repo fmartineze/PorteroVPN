@@ -410,6 +410,15 @@ declare_messages! {
         es: "Instalando OpenVPN (te pedira permisos de administrador)...",
         en: "Installing OpenVPN (it will ask for administrator permission)..."
     },
+    WgInstallSearching => {
+        es: "Buscando la ultima version de WireGuard...",
+        en: "Looking for the latest WireGuard version..."
+    },
+    WgInstallRunningMsi => {
+        es: "Instalando WireGuard (te pedira permisos de administrador)...",
+        en: "Installing WireGuard (it will ask for administrator permission)..."
+    },
+    BtnInstallWireGuard => { es: "Instalar WireGuard", en: "Install WireGuard" },
 
     // --- Conexion ------------------------------------------------------
     /// Estado que se muestra en el primer intento, antes de que openvpn.exe
@@ -525,6 +534,20 @@ pub fn downloading_openvpn(version: &str) -> String {
     match current() {
         Lang::Es => format!("Descargando OpenVPN {version} y verificando su firma..."),
         Lang::En => format!("Downloading OpenVPN {version} and verifying its signature..."),
+    }
+}
+
+pub fn downloading_wireguard(version: &str) -> String {
+    match current() {
+        Lang::Es => format!("Descargando WireGuard {version} y verificando su firma..."),
+        Lang::En => format!("Downloading WireGuard {version} and verifying its signature..."),
+    }
+}
+
+pub fn wireguard_install_failed(detail: &str) -> String {
+    match current() {
+        Lang::Es => format!("No se pudo instalar WireGuard: {detail}"),
+        Lang::En => format!("WireGuard could not be installed: {detail}"),
     }
 }
 

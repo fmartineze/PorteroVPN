@@ -83,6 +83,15 @@ Source: "..\target\release\portero-vpn-svc.exe"; DestDir: "{app}"; Flags: ignore
 ; en un equipo normal esta carpeta no se toca nunca.
 Source: "..\assets\lavapipe\vulkan_lvp.dll"; DestDir: "{app}\lavapipe"; Flags: ignoreversion
 Source: "..\assets\lavapipe\lvp_icd.x86_64.json"; DestDir: "{app}\lavapipe"; Flags: ignoreversion
+; La licencia de Mesa viaja CON el binario, no solo en el repositorio: la MIT
+; obliga a acompanar cada copia del software de su aviso, y lo que se
+; distribuye al usuario es este instalador.
+Source: "..\assets\lavapipe\LICENSE.md"; DestDir: "{app}\lavapipe"; Flags: ignoreversion
+; Y las de la propia aplicacion, por lo mismo: hasta ahora no llegaban al
+; equipo del usuario.
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Portero VPN"; Filename: "{app}\portero-vpn.exe"
