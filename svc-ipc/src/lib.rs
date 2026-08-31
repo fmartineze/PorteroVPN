@@ -73,11 +73,15 @@ pub enum IpcRequest {
     /// Estado del tunel: cuando fue el ultimo handshake y cuanto se ha
     /// transferido.
     ///
-    /// Vive aqui por el mismo motivo que `QueryBitLocker`: el pipe de estado
-    /// que expone cada tunel de WireGuard esta restringido a Administradores,
-    /// y la GUI corre deliberadamente sin privilegios. El servicio solo
-    /// informa de lo observado; interpretar si el tunel esta sano sigue siendo
-    /// cosa de la GUI.
+    /// Vive aqui por el mismo motivo que `QueryBitLocker`: leer el estado de un
+    /// tunel exige privilegios que la GUI no tiene a proposito. El servicio
+    /// solo informa de lo observado; interpretar si el tunel esta sano sigue
+    /// siendo cosa de la GUI.
+    ///
+    /// El estado se saca de `wg.exe show <nombre> dump`, **no de un named
+    /// pipe**: WireGuard para Windows usa el driver WireGuardNT desde la 0.4 y
+    /// no expone la UAPI por pipe (comprobado con un tunel corriendo -- ver
+    /// `wireguard_path::locate_wg_exe`).
     QueryWireGuardStatus { tunnel_name: String },
 }
 

@@ -42,6 +42,29 @@ pub fn is_installed() -> bool {
     locate_wireguard_exe().is_some()
 }
 
+/// Ruta a `wg.exe`, la herramienta de estado que WireGuard instala junto a
+/// `wireguard.exe`.
+///
+/// Hace falta porque **WireGuard para Windows no expone el estado del tunel
+/// por un named pipe**: desde que usa el driver WireGuardNT en vez del modelo
+/// en espacio de usuario, el estado se lee del propio adaptador. Comprobado en
+/// la practica: con el tunel corriendo y su adaptador creado, abrir
+/// `\\.\pipe\ProtectedPrefix\Administrators\WireGuard\<nombre>` da
+/// ERROR_FILE_NOT_FOUND, y no hay ningun pipe de WireGuard entre los 337 que
+/// enumera el sistema. `wg.exe show <nombre> dump` es la via que si funciona.
+pub fn locate_wg_exe() -> Option<PathBuf> {
+    if let Ok(override_path) = std::env::var("PORTERO_VPN_WG_EXE") {
+        let path = PathBuf::from(override_path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    // Vive junto a `wireguard.exe`, asi que se deriva de el en vez de repetir
+    // la lista de candidatos.
+    locate_wireguard_exe().map(|p| p.with_file_name("wg.exe")).filter(|p| p.is_file())
+}
+
 /// Nombre de tunel para un perfil, a partir de su id en hexadecimal sin
 /// guiones (`Uuid::simple`). Se toma como texto y no como `Uuid` para no
 /// arrastrar la dependencia a este crate, que a proposito solo depende de

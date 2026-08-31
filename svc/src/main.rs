@@ -665,83 +665,94 @@ async fn stop_wireguard_tunnel(tunnel_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Ruta del pipe de estado de un tunel. Lo expone el propio servicio del tunel
-/// que crea WireGuard, bajo el prefijo protegido de Administradores.
-fn tunnel_pipe_path(tunnel_name: &str) -> String {
-    format!(r"\\.\pipe\ProtectedPrefix\Administrators\WireGuard\{tunnel_name}")
-}
-
+/// Pregunta a `wg.exe` por el estado del tunel.
+///
+/// **No hay named pipe que consultar.** WireGuard para Windows usa el driver
+/// WireGuardNT desde la 0.4, no el modelo en espacio de usuario, asi que no
+/// expone la UAPI por pipe: el estado vive en el adaptador. Comprobado a mano
+/// con un tunel de laboratorio corriendo -- abrir
+/// `\\.\pipe\ProtectedPrefix\Administrators\WireGuard\<nombre>` devuelve
+/// ERROR_FILE_NOT_FOUND y no aparece ningun pipe de WireGuard entre los que
+/// enumera el sistema.
+///
+/// Sigue viviendo en el servicio, y no en la GUI, por el mismo motivo de
+/// siempre: leer el adaptador exige privilegios que la GUI no tiene a
+/// proposito.
 async fn query_wireguard_status(tunnel_name: &str) -> Result<svc_ipc::WireGuardTunnelStatus> {
-    use tokio::io::AsyncReadExt;
-    use tokio::net::windows::named_pipe::ClientOptions;
-
     anyhow::ensure!(
         svc_ipc::wireguard_path::is_ours(tunnel_name),
         "nombre de tunel inesperado: {tunnel_name}"
     );
 
-    let path = tunnel_pipe_path(tunnel_name);
-    let mut pipe = match ClientOptions::new().open(&path) {
-        Ok(pipe) => pipe,
-        Err(e) => {
-            // Sin el codigo del sistema y el estado del servicio, este fallo es
-            // mudo: "no se pudo abrir" no distingue entre la ruta equivocada,
-            // el tunel que no llego a arrancar y un permiso denegado. Costo una
-            // tarde averiguarlo a mano.
-            let service_state = tunnel_service_state(tunnel_name);
-            anyhow::bail!(
-                "no se pudo abrir el pipe de estado del tunel en {path}: {e} (codigo {code:?}); \
-                 el servicio del tunel esta {service_state}",
-                code = e.raw_os_error(),
-            );
-        }
-    };
+    let wg = svc_ipc::wireguard_path::locate_wg_exe()
+        .context("no se encontro wg.exe junto a WireGuard")?;
 
-    // API de espacio de usuario de WireGuard: `get=1` seguido de linea en
-    // blanco, y responde con pares clave=valor hasta un `errno=`.
-    pipe.write_all(b"get=1\n\n").await.context("no se pudo pedir el estado del tunel")?;
+    let output = tokio::time::timeout(
+        WIREGUARD_CLI_TIMEOUT,
+        Command::new(wg).arg("show").arg(tunnel_name).arg("dump").output(),
+    )
+    .await
+    .context("wg.exe no respondio a tiempo")?
+    .context("no se pudo ejecutar wg.exe")?;
 
-    let mut raw = String::new();
-    pipe.read_to_string(&mut raw).await.context("no se pudo leer el estado del tunel")?;
+    if !output.status.success() {
+        let detalle = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let estado = tunnel_service_state(tunnel_name);
+        anyhow::bail!(
+            "wg.exe no pudo leer el tunel ({}): {}; el servicio del tunel esta {estado}",
+            output.status,
+            if detalle.is_empty() { "sin detalle" } else { &detalle }
+        );
+    }
 
-    parse_tunnel_status(&raw).context("respuesta del tunel ilegible")
+    // OJO: `stdout` empieza por la CLAVE PRIVADA de la interfaz. No registrarlo
+    // nunca en crudo; `parse_tunnel_status` solo extrae contadores.
+    let raw = String::from_utf8_lossy(&output.stdout);
+    parse_tunnel_status(&raw)
 }
 
-/// Convierte la respuesta de `get=1` en el estado que entiende la GUI.
+/// Convierte la salida de `wg show <nombre> dump` en el estado que entiende la
+/// GUI.
 ///
-/// Separado de la lectura del pipe a proposito: asi se puede probar con
-/// respuestas reales capturadas, sin WireGuard instalado ni tunel levantado.
+/// Formato, separado por tabuladores:
+///   - primera linea (interfaz, 4 campos): clave-privada, clave-publica,
+///     puerto, fwmark. **El primer campo es secreto.**
+///   - una linea por par (8 campos): clave-publica, clave-compartida, endpoint,
+///     allowed-ips, ultimo-handshake, rx, tx, keepalive.
+///
+/// Separado de la ejecucion del proceso a proposito: asi se prueba con salidas
+/// reales capturadas, sin WireGuard instalado ni tunel levantado.
 fn parse_tunnel_status(raw: &str) -> Result<svc_ipc::WireGuardTunnelStatus> {
+    const CAMPOS_POR_PAR: usize = 8;
+    const IDX_HANDSHAKE: usize = 4;
+    const IDX_RX: usize = 5;
+    const IDX_TX: usize = 6;
+
     let mut last_handshake_epoch: Option<u64> = None;
     let mut rx_bytes = 0u64;
     let mut tx_bytes = 0u64;
-    let mut errno: Option<i64> = None;
+    let mut peers = 0usize;
 
-    for line in raw.lines() {
-        let Some((key, value)) = line.split_once('=') else { continue };
-        match key {
-            // Puede haber varios pares: se queda el handshake mas reciente y se
-            // suman los contadores, que es lo que tiene sentido mostrar como
-            // estado del tunel.
-            "last_handshake_time_sec" => {
-                if let Ok(secs) = value.parse::<u64>() {
-                    if secs > 0 {
-                        last_handshake_epoch = Some(last_handshake_epoch.map_or(secs, |p| p.max(secs)));
-                    }
-                }
-            }
-            "rx_bytes" => rx_bytes += value.parse::<u64>().unwrap_or(0),
-            "tx_bytes" => tx_bytes += value.parse::<u64>().unwrap_or(0),
-            "errno" => errno = value.parse::<i64>().ok(),
-            _ => {}
+    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+        let campos: Vec<&str> = line.split('\t').collect();
+        // La linea de interfaz trae 4 campos; solo interesan los pares.
+        if campos.len() < CAMPOS_POR_PAR {
+            continue;
         }
+        peers += 1;
+
+        // Se queda el handshake mas reciente de todos los pares y se suman los
+        // contadores: es lo que tiene sentido mostrar como estado del tunel.
+        if let Ok(secs) = campos[IDX_HANDSHAKE].parse::<u64>() {
+            if secs > 0 {
+                last_handshake_epoch = Some(last_handshake_epoch.map_or(secs, |p| p.max(secs)));
+            }
+        }
+        rx_bytes += campos[IDX_RX].parse::<u64>().unwrap_or(0);
+        tx_bytes += campos[IDX_TX].parse::<u64>().unwrap_or(0);
     }
 
-    match errno {
-        Some(0) => {}
-        Some(other) => anyhow::bail!("el tunel devolvio errno={other}"),
-        None => anyhow::bail!("el tunel no devolvio errno"),
-    }
+    anyhow::ensure!(peers > 0, "wg.exe no devolvio ningun par para el tunel");
 
     // El handshake viene como epoch absoluto; a la GUI le sirve mas la
     // antiguedad. `saturating_sub` porque un reloj movido hacia atras no debe
@@ -767,13 +778,20 @@ mod tests {
             .as_secs()
     }
 
+    /// Salida real capturada de `wg show <nombre> dump` con un tunel de
+    /// laboratorio recien levantado. La primera linea es la interfaz (4
+    /// campos, el primero la clave privada) y no debe confundirse con un par.
+    const RECIEN_LEVANTADO: &str = concat!(
+        "PRIVADA=\tDE7GpEGQwJp4Y4OjoOfMulo3NJWPCdaH31ypY6zN9kw=\t64244\toff\n",
+        "VbBKg/nGn2CKwe9OgcFB25q/pVv+zoyiCjK2e7hlsmg=\t(none)\t127.0.0.1:51999\t10.99.99.0/24\t0\t0\t148\t15\n"
+    );
+
     #[test]
     fn parses_a_tunnel_that_has_never_completed_a_handshake() {
-        // Recien levantado, WireGuard devuelve 0: no significa "hace mucho"
-        // sino "todavia ninguno". El handshake no ocurre hasta que hay trafico
-        // que enviar, asi que este es el estado normal al arrancar.
-        let raw = "private_key=00\npublic_key=aa\nlast_handshake_time_sec=0\nlast_handshake_time_nsec=0\nrx_bytes=0\ntx_bytes=148\nerrno=0\n";
-        let status = parse_tunnel_status(raw).expect("deberia parsear");
+        // Recien levantado, WireGuard devuelve 0 en el handshake: no significa
+        // "hace mucho" sino "todavia ninguno". El handshake no ocurre hasta que
+        // hay trafico que enviar, asi que este es el estado normal al arrancar.
+        let status = parse_tunnel_status(RECIEN_LEVANTADO).expect("deberia parsear");
 
         assert_eq!(status.last_handshake_secs_ago, None);
         assert_eq!(status.rx_bytes, 0);
@@ -781,10 +799,23 @@ mod tests {
         assert!(!status.is_alive());
     }
 
+    /// La linea de interfaz tiene 4 campos y el primero es la CLAVE PRIVADA:
+    /// tomarla por un par ademas de dar cifras falsas seria tratar un secreto
+    /// como un contador.
+    #[test]
+    fn the_interface_line_is_not_mistaken_for_a_peer() {
+        let solo_interfaz = "PRIVADA=\tPUBLICA=\t64244\toff\n";
+        assert!(
+            parse_tunnel_status(solo_interfaz).is_err(),
+            "sin ningun par no hay estado que informar"
+        );
+    }
+
     #[test]
     fn a_recent_handshake_counts_as_alive() {
         let raw = format!(
-            "public_key=aa\nlast_handshake_time_sec={}\nrx_bytes=4096\ntx_bytes=2048\nerrno=0\n",
+            "PRIVADA=\tPUBLICA=\t64244\toff\n\
+             clave\t(none)\t1.2.3.4:51820\t0.0.0.0/0\t{}\t4096\t2048\t25\n",
             epoch_now() - 5
         );
         let status = parse_tunnel_status(&raw).expect("deberia parsear");
@@ -792,12 +823,14 @@ mod tests {
         assert!(status.last_handshake_secs_ago.unwrap() <= 10);
         assert!(status.is_alive());
         assert_eq!(status.rx_bytes, 4096);
+        assert_eq!(status.tx_bytes, 2048);
     }
 
     #[test]
     fn an_old_handshake_is_not_alive() {
         let raw = format!(
-            "last_handshake_time_sec={}\nrx_bytes=0\ntx_bytes=0\nerrno=0\n",
+            "PRIVADA=\tPUBLICA=\t64244\toff\n\
+             clave\t(none)\t1.2.3.4:51820\t0.0.0.0/0\t{}\t10\t20\t25\n",
             epoch_now() - 400
         );
         let status = parse_tunnel_status(&raw).expect("deberia parsear");
@@ -806,13 +839,15 @@ mod tests {
         assert!(!status.is_alive(), "400 s supera el umbral de 180 que aplica WireGuard");
     }
 
-    /// Con varios pares se muestra el handshake mas reciente y la suma de los
-    /// contadores.
+    /// Un `.conf` con varios pares es lo normal (el del usuario tiene dos): se
+    /// muestra el handshake mas reciente y la suma de los contadores.
     #[test]
     fn several_peers_are_aggregated() {
         let now = epoch_now();
         let raw = format!(
-            "public_key=aa\nlast_handshake_time_sec={}\nrx_bytes=100\ntx_bytes=200\npublic_key=bb\nlast_handshake_time_sec={}\nrx_bytes=50\ntx_bytes=25\nerrno=0\n",
+            "PRIVADA=\tPUBLICA=\t64244\toff\n\
+             clave1\t(none)\ta:1\t0.0.0.0/0\t{}\t100\t200\t30\n\
+             clave2\t(none)\tb:2\t0.0.0.0/32\t{}\t50\t25\t15\n",
             now - 300,
             now - 10
         );
@@ -824,11 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn an_error_from_the_tunnel_is_reported() {
-        assert!(parse_tunnel_status("errno=1\n").is_err());
-        assert!(
-            parse_tunnel_status("rx_bytes=0\n").is_err(),
-            "sin errno no se puede confiar en la respuesta"
-        );
+    fn empty_output_is_an_error() {
+        assert!(parse_tunnel_status("").is_err());
     }
 }

@@ -111,8 +111,8 @@ impl SvcClient {
     }
 
     /// Ver `svc_ipc::IpcRequest::QueryWireGuardStatus`: como con BitLocker, lo
-    /// consulta el servicio porque el pipe de estado de cada tunel esta
-    /// restringido a Administradores.
+    /// consulta el servicio porque leer el estado de un tunel exige
+    /// privilegios que la GUI no tiene.
     pub async fn query_wireguard_status(
         tunnel_name: &str,
     ) -> Result<svc_ipc::WireGuardTunnelStatus, SvcClientError> {
