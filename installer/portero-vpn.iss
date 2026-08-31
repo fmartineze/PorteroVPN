@@ -17,7 +17,7 @@
 ;   "C:\Users\<usuario>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" portero-vpn.iss
 ; El instalador resultante queda en installer\output\PorteroVPN-Setup.exe.
 
-#define AppVersion "0.4.0"
+#define AppVersion "0.5.0"
 
 [Setup]
 AppId={{67CC109E-AD6C-4033-9EBD-26D3C1EDEC68}
