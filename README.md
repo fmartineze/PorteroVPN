@@ -13,7 +13,7 @@ Si el antivirus está desactivado, el túnel no se levanta.
 [![Plataforma](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?style=for-the-badge&logo=windows&logoColor=white)](#instalación)
 ![Rust](https://img.shields.io/badge/Rust-1.96-b7410e?style=for-the-badge&logo=rust&logoColor=white)
 [![Idiomas](https://img.shields.io/badge/idiomas-ES%20%7C%20EN-7a5ba6?style=for-the-badge)](#-configuración)
-[![Versión](https://img.shields.io/badge/versión-0.3.0-6c8e3a?style=for-the-badge)](https://github.com/fmartineze/PorteroVPN/releases)
+[![Versión](https://img.shields.io/badge/versión-0.4.0-6c8e3a?style=for-the-badge)](https://github.com/fmartineze/PorteroVPN/releases)
 
 <br>
 
