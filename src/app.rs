@@ -276,6 +276,10 @@ impl PorteroApp {
             }
             storage::clear_active_tunnel_marker();
         }
+
+        // Despues de resolver el tunel huerfano, porque su marcador vive en
+        // `run\` y la limpieza pasa por ahi.
+        storage::housekeeping();
         let quit_requested = Arc::new(AtomicBool::new(false));
         let preferences = storage::load_preferences().unwrap_or_else(|e| {
             tracing::warn!(error = %e, "no se pudo cargar preferences.toml, usando valores por defecto");

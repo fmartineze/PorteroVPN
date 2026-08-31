@@ -80,6 +80,106 @@ pub fn prune_connection_logs(max_files: usize) {
     }
 }
 
+/// Cuanto se conservan los ficheros de diagnostico antes de purgarlos por
+/// antiguedad. Los topes que ya habia eran **por numero de ficheros**, no por
+/// fecha, y dejaban fuera por completo `run\`, que crecia sin limite.
+pub const DIAGNOSTIC_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Limpieza de arranque de todo lo que la aplicacion deja por el camino.
+///
+/// Se llama una vez al abrir la aplicacion, despues de resolver un posible
+/// tunel huerfano (que lee su marcador de `run\`). Mejor esfuerzo en todo: un
+/// fichero que no se puede borrar se anota en el log tecnico y no interrumpe
+/// nada.
+pub fn housekeeping() {
+    // Los passfiles son secretos de un solo uso para la management interface.
+    // Uno que sobreviva a su proceso ya no vale para nada -- y solo sobrevive
+    // cuando la conexion acabo mal --, asi que no se conserva ni un dia: se
+    // borran todos al arrancar. Como la aplicacion es de instancia unica
+    // (`single_instance`), nada de lo que hay aqui puede estar en uso.
+    let removed_passfiles = remove_matching(&run_dir(), |name| name.ends_with(".passfile"));
+
+    // Su `.log` es la salida de diagnostico de openvpn.exe, que si tiene valor
+    // cuando una conexion falla antes de que la management interface responda
+    // (ver el comentario de `--log` en `svc/src/main.rs`). Se conserva el plazo
+    // normal en vez de borrarse con el passfile.
+    let removed_logs = remove_older_than(&run_dir(), DIAGNOSTIC_RETENTION, |name| {
+        name.ends_with(".passfile.log")
+    });
+
+    // Los logs tecnicos ya tenian tope por numero (10 ficheros, ver
+    // `init_logging`), pero eso no acota su antiguedad: en un equipo que se usa
+    // poco podian quedar meses de historial.
+    let removed_app_logs = remove_older_than(&logs_dir(), DIAGNOSTIC_RETENTION, |_| true);
+    let removed_conn_logs = remove_older_than(&connection_logs_dir(), DIAGNOSTIC_RETENTION, |_| true);
+
+    let total = removed_passfiles + removed_logs + removed_app_logs + removed_conn_logs;
+    if total > 0 {
+        tracing::info!(
+            passfiles = removed_passfiles,
+            logs_openvpn = removed_logs,
+            logs_app = removed_app_logs,
+            logs_conexion = removed_conn_logs,
+            "limpieza de arranque"
+        );
+    }
+}
+
+/// Borra los ficheros de `dir` que cumplan `matches`. Devuelve cuantos.
+fn remove_matching(dir: &Path, matches: impl Fn(&str) -> bool) -> usize {
+    remove_if(dir, |name, _| matches(name))
+}
+
+/// Borra los ficheros de `dir` que cumplan `matches` y superen `max_age`.
+///
+/// El fichero de log que la aplicacion tiene abierto ahora mismo es de hoy, asi
+/// que ningun plazo razonable lo alcanza; no hace falta excluirlo a mano.
+fn remove_older_than(dir: &Path, max_age: std::time::Duration, matches: impl Fn(&str) -> bool) -> usize {
+    let now = std::time::SystemTime::now();
+    remove_if(dir, |name, modified| {
+        matches(name)
+            && now
+                .duration_since(modified)
+                // Una fecha en el futuro (reloj movido, copia restaurada) no es
+                // motivo para borrar nada.
+                .map(|age| age > max_age)
+                .unwrap_or(false)
+    })
+}
+
+fn remove_if(dir: &Path, should_remove: impl Fn(&str, std::time::SystemTime) -> bool) -> usize {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // Que no exista todavia es normal en el primer arranque.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return 0,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %dir.display(), "no se pudo leer el directorio para limpiarlo");
+            return 0;
+        }
+    };
+
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else { continue };
+        if !file_type.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
+        if !should_remove(&name, modified) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %entry.path().display(), "no se pudo borrar un fichero al limpiar")
+            }
+        }
+    }
+    removed
+}
+
 pub fn policy_path() -> PathBuf {
     data_dir().join("policy.toml")
 }
@@ -752,6 +852,96 @@ created_at = "2026-08-01T09:00:00Z"
                 .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
                 .collect();
             assert_eq!(ficheros, vec![format!("{}.meta.toml", meta.id)]);
+        });
+    }
+
+    /// Escribe un fichero y le pone una fecha de modificacion de hace
+    /// `days_ago` dias, para poder probar la purga por antiguedad sin esperar.
+    fn write_aged(path: &Path, days_ago: u64) {
+        std::fs::write(path, b"contenido").expect("no se pudo escribir el fichero de prueba");
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days_ago * 24 * 60 * 60);
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(when).expect("no se pudo fijar la fecha de modificacion");
+    }
+
+    /// Un passfile es un secreto de un solo uso: si sobrevivio a su proceso, ya
+    /// no vale para nada y no se conserva ni un dia.
+    #[test]
+    fn housekeeping_removes_every_leftover_passfile() {
+        with_temp_program_data(|| {
+            ensure_data_dirs().expect("ensure_data_dirs fallo");
+            let reciente = run_dir().join("aaaa.passfile");
+            let antiguo = run_dir().join("bbbb.passfile");
+            write_aged(&reciente, 0);
+            write_aged(&antiguo, 30);
+
+            housekeeping();
+
+            assert!(!reciente.exists(), "un passfile reciente tambien es basura si sobrevivio");
+            assert!(!antiguo.exists());
+        });
+    }
+
+    /// El `.log` de openvpn si tiene valor mientras es reciente: es lo unico
+    /// que explica una conexion que fallo antes de que respondiera la
+    /// management interface.
+    #[test]
+    fn housekeeping_keeps_recent_openvpn_logs_and_drops_old_ones() {
+        with_temp_program_data(|| {
+            ensure_data_dirs().expect("ensure_data_dirs fallo");
+            let reciente = run_dir().join("aaaa.passfile.log");
+            let antiguo = run_dir().join("bbbb.passfile.log");
+            write_aged(&reciente, 2);
+            write_aged(&antiguo, 10);
+
+            housekeeping();
+
+            assert!(reciente.exists(), "se borro un log de openvpn de hace 2 dias");
+            assert!(!antiguo.exists(), "sobrevivio un log de openvpn de hace 10 dias");
+        });
+    }
+
+    #[test]
+    fn housekeeping_prunes_logs_by_age_in_both_directories() {
+        with_temp_program_data(|| {
+            ensure_data_dirs().expect("ensure_data_dirs fallo");
+            let app_reciente = logs_dir().join("portero-vpn.log.2026-08-30");
+            let app_antiguo = logs_dir().join("portero-vpn.log.2026-01-01");
+            let conn_reciente = connection_logs_dir().join("conn-1.log");
+            let conn_antiguo = connection_logs_dir().join("conn-2.log");
+            write_aged(&app_reciente, 1);
+            write_aged(&app_antiguo, 90);
+            write_aged(&conn_reciente, 6);
+            write_aged(&conn_antiguo, 8);
+
+            housekeeping();
+
+            assert!(app_reciente.exists());
+            assert!(!app_antiguo.exists());
+            assert!(conn_reciente.exists(), "6 dias esta dentro del plazo de 7");
+            assert!(!conn_antiguo.exists(), "8 dias esta fuera del plazo de 7");
+        });
+    }
+
+    /// La limpieza no puede llevarse por delante ni los datos del usuario ni el
+    /// marcador del tunel activo, que vive en el mismo directorio que los
+    /// passfiles.
+    #[test]
+    fn housekeeping_leaves_user_data_and_the_tunnel_marker_alone() {
+        with_temp_program_data(|| {
+            ensure_data_dirs().expect("ensure_data_dirs fallo");
+            let marcador = active_tunnel_marker_path();
+            write_aged(&marcador, 60);
+            let policy = policy_path();
+            write_aged(&policy, 60);
+            let hash = config_password_hash_path();
+            write_aged(&hash, 60);
+
+            housekeeping();
+
+            assert!(marcador.exists(), "se borro el marcador del tunel activo");
+            assert!(policy.exists(), "se borro la politica de comprobaciones");
+            assert!(hash.exists(), "se borro la contrasena de Configuracion");
         });
     }
 

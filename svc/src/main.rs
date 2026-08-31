@@ -605,6 +605,26 @@ fn tunnel_service_name(tunnel_name: &str) -> String {
     format!("WireGuardTunnel${tunnel_name}")
 }
 
+/// Estado del servicio del tunel, en texto, para poder explicar por que no se
+/// pudo abrir su pipe.
+fn tunnel_service_state(tunnel_name: &str) -> String {
+    use windows_service::service::ServiceAccess;
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+    let manager = match ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) {
+        Ok(manager) => manager,
+        Err(e) => return format!("en estado desconocido (no se pudo abrir el SCM: {e})"),
+    };
+    let service = match manager.open_service(tunnel_service_name(tunnel_name), ServiceAccess::QUERY_STATUS) {
+        Ok(service) => service,
+        Err(e) => return format!("sin registrar o inaccesible ({e})"),
+    };
+    match service.query_status() {
+        Ok(status) => format!("en estado {:?}", status.current_state),
+        Err(e) => format!("en estado desconocido ({e})"),
+    }
+}
+
 async fn set_tunnel_start_type_manual(tunnel_name: &str) -> Result<()> {
     let output = Command::new("sc")
         .arg("config")
@@ -660,9 +680,22 @@ async fn query_wireguard_status(tunnel_name: &str) -> Result<svc_ipc::WireGuardT
         "nombre de tunel inesperado: {tunnel_name}"
     );
 
-    let mut pipe = ClientOptions::new()
-        .open(tunnel_pipe_path(tunnel_name))
-        .context("no se pudo abrir el pipe de estado del tunel")?;
+    let path = tunnel_pipe_path(tunnel_name);
+    let mut pipe = match ClientOptions::new().open(&path) {
+        Ok(pipe) => pipe,
+        Err(e) => {
+            // Sin el codigo del sistema y el estado del servicio, este fallo es
+            // mudo: "no se pudo abrir" no distingue entre la ruta equivocada,
+            // el tunel que no llego a arrancar y un permiso denegado. Costo una
+            // tarde averiguarlo a mano.
+            let service_state = tunnel_service_state(tunnel_name);
+            anyhow::bail!(
+                "no se pudo abrir el pipe de estado del tunel en {path}: {e} (codigo {code:?}); \
+                 el servicio del tunel esta {service_state}",
+                code = e.raw_os_error(),
+            );
+        }
+    };
 
     // API de espacio de usuario de WireGuard: `get=1` seguido de linea en
     // blanco, y responde con pares clave=valor hasta un `errno=`.

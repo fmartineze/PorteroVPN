@@ -30,7 +30,7 @@ pub const SERVICE_NAME: &str = "PorteroVPNSvc";
 /// localizarlo junto a su propio `.exe` al instalar/reinstalar.
 pub const SERVICE_EXE_NAME: &str = "portero-vpn-svc.exe";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum IpcRequest {
     /// Lanza `openvpn.exe --config <profile_path> --management 127.0.0.1
     /// <mgmt_port> <passfile_path> --management-hold
@@ -79,6 +79,39 @@ pub enum IpcRequest {
     /// informa de lo observado; interpretar si el tunel esta sano sigue siendo
     /// cosa de la GUI.
     QueryWireGuardStatus { tunnel_name: String },
+}
+
+/// `Debug` a mano, no derivado: la GUI y el servicio registran cada peticion
+/// con `?request`, y un `.conf` de WireGuard contiene **siempre** la clave
+/// privada del par. Con el derive, esa clave acababa en claro en
+/// `portero-vpn.log`, que vive en un directorio legible por cualquier usuario
+/// del equipo. Se redacta aqui, en el tipo, para que ningun sitio que registre
+/// una peticion pueda filtrarla -- ni los que existen hoy ni los que se anadan.
+impl std::fmt::Debug for IpcRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StartProfile { profile_path, passfile_path, mgmt_port } => f
+                .debug_struct("StartProfile")
+                .field("profile_path", profile_path)
+                .field("passfile_path", passfile_path)
+                .field("mgmt_port", mgmt_port)
+                .finish(),
+            Self::StopProfile { pid } => f.debug_struct("StopProfile").field("pid", pid).finish(),
+            Self::Ping => f.write_str("Ping"),
+            Self::QueryBitLocker => f.write_str("QueryBitLocker"),
+            Self::StartWireGuardTunnel { tunnel_name, .. } => f
+                .debug_struct("StartWireGuardTunnel")
+                .field("tunnel_name", tunnel_name)
+                .field("config", &"<redactado: contiene la clave privada>")
+                .finish(),
+            Self::StopWireGuardTunnel { tunnel_name } => {
+                f.debug_struct("StopWireGuardTunnel").field("tunnel_name", tunnel_name).finish()
+            }
+            Self::QueryWireGuardStatus { tunnel_name } => {
+                f.debug_struct("QueryWireGuardStatus").field("tunnel_name", tunnel_name).finish()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
