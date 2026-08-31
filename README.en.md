@@ -101,6 +101,9 @@ untouched and does not need to be kept.
 
 ### 🔌 Connecting
 
+Each connection carries an icon for its engine: 🔒 for OpenVPN and ⚡ for
+WireGuard, coloured by status.
+
 1. Select the connection in the list.
 2. Press **CONNECT**.
 3. The security checks run. **If a mandatory one fails, the connection stops

@@ -102,6 +102,9 @@ ni hace falta conservarlo.
 
 ### 🔌 Conectar
 
+Cada conexión lleva un icono según su motor: 🔒 para OpenVPN y ⚡ para
+WireGuard, coloreado según el estado.
+
 1. Selecciona la conexión en la lista.
 2. Pulsa **CONECTAR**.
 3. Se ejecutan las comprobaciones de seguridad. **Si alguna obligatoria falla,

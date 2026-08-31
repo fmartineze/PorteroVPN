@@ -35,16 +35,27 @@ const MAX_LOG_LINES: usize = 2000;
 /// compartida y no un numero suelto dentro de la funcion.
 const BOTTOM_BAR_HEIGHT: f32 = 90.0;
 
-/// Indicador a la izquierda de cada conexion. El estado lo da el color de la
-/// fase (gris en reposo, ambar conectando, verde conectado, rojo en error).
+/// Icono a la izquierda de cada conexion: **la forma dice el motor y el color
+/// dice el estado** (gris en reposo, ambar conectando, verde conectado, rojo en
+/// error). Antes los dos motores compartian icono y el color cargaba solo con
+/// todo.
 ///
-/// **No volver al circulo U+25CF**: ese glifo solo existe en
-/// `Hack-Regular.ttf`, que egui usa unicamente en la familia monoespaciada. En
-/// la proporcional -que es la de estas etiquetas- la cadena es Ubuntu-Light ->
-/// NotoEmoji -> emoji-icon-font, ninguna de las cuales lo tiene, asi que se
-/// pintaba el cuadrado de "caracter ausente". Este si esta en las dos ultimas,
-/// verificado leyendo su tabla cmap.
-const ICON_CONNECTION: &str = "\u{1F50C}";
+/// - Candado para OpenVPN: autentica con TLS y certificados, y es el motor
+///   clasico.
+/// - Rayo para WireGuard: es el simbolo que la comunidad le asocia, por ligero.
+///
+/// **Los dos glifos estan verificados contra la cadena de fuentes
+/// proporcional** (Ubuntu-Light -> NotoEmoji -> emoji-icon-font) leyendo su
+/// tabla cmap. No basta con que un glifo exista: el circulo `U+25CF` que habia
+/// aqui antes solo esta en `Hack-Regular.ttf`, que egui usa unicamente en la
+/// familia monoespaciada, y por eso se pintaba el cuadrado de "caracter
+/// ausente". Cualquier icono nuevo hay que comprobarlo igual.
+fn connection_icon(kind: storage::VpnKind) -> &'static str {
+    match kind {
+        storage::VpnKind::OpenVpn => "\u{1F512}",
+        storage::VpnKind::WireGuard => "\u{26A1}",
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -971,7 +982,11 @@ impl PorteroApp {
                 ui.add_space(10.0);
                 // Tamano fijo: los emoji de NotoEmoji vienen mas grandes que el
                 // texto normal y descuadraban el alto de la fila.
-                ui.add(egui::Label::new(RichText::new(ICON_CONNECTION).size(14.0).color(status_color)));
+                // Sin `.selectable(false)` explicito: la fila entera ya lo
+                // desactiva unas lineas mas arriba.
+                ui.add(egui::Label::new(
+                    RichText::new(connection_icon(profile.kind)).size(14.0).color(status_color),
+                ));
                 ui.add_space(4.0);
                 ui.add(egui::Label::new(RichText::new(&profile.display_name).strong()).truncate());
 
