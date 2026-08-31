@@ -869,15 +869,11 @@ impl PorteroApp {
             ui.separator();
         }
 
-        // El aviso de WireGuard solo sale si de verdad hace falta: a quien solo
-        // use OpenVPN no le interesa que le pidan instalar otro motor. Es lo
-        // contrario del de arriba, que se muestra siempre porque OpenVPN era el
-        // unico motor y sigue siendo el habitual.
-        if !self.wireguard_installed && self.profiles.iter().any(|p| p.kind == storage::VpnKind::WireGuard) {
-            ui.colored_label(theme::WARNING, t(Msg::BannerWireGuardMissing));
-            ui.separator();
-        }
-
+        // WireGuard no tiene banner permanente aqui, a diferencia de OpenVPN.
+        // Se avisa al importar un tunel (ver `render_import_dialog`), que es
+        // cuando el usuario esta pendiente del asunto, y el boton CONECTAR
+        // sigue explicando por que no se puede conectar si falta. Un banner fijo
+        // seria ruido en cada arranque para algo que ya se dijo.
         if let Some(error) = &self.import_error {
             ui.colored_label(theme::DANGER, error);
         }
@@ -1338,6 +1334,8 @@ impl PorteroApp {
 
         let is_wireguard = draft.kind == storage::VpnKind::WireGuard;
         let title = if is_wireguard { t(Msg::ImportWgTitle) } else { t(Msg::ImportTitle) };
+        // Se copia antes del cierre: dentro ya no se puede prestar `self`.
+        let wireguard_installed = self.wireguard_installed;
 
         egui::Window::new(title).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
             ui.label(i18n::file_label(&draft.source_path.display().to_string()));
@@ -1352,6 +1350,16 @@ impl PorteroApp {
             // lugar por que no estan.
             if is_wireguard {
                 ui.label(RichText::new(t(Msg::ImportWgNoCredentials)).small().weak());
+
+                // El momento de pedir el motor es este, no un banner
+                // permanente: el usuario acaba de elegir un .conf y esta
+                // pendiente. Importar se permite igualmente -- el perfil se
+                // guarda bien y WireGuard puede instalarse despues --, pero
+                // conviene decirlo antes de que lo descubra al conectar.
+                if !wireguard_installed {
+                    ui.add_space(4.0);
+                    ui.colored_label(theme::WARNING, t(Msg::ImportWgNeedsWireGuard));
+                }
             } else {
                 ui.checkbox(&mut draft.remember_credentials, t(Msg::RememberForProfile));
 

@@ -177,11 +177,16 @@ declare_messages! {
         en: "OpenVPN Community is not installed yet: it is required in order to connect."
     },
     BtnInstallOpenVpn => { es: "Instalar OpenVPN", en: "Install OpenVPN" },
-    BannerWireGuardMissing => {
-        es: "Tienes tuneles de WireGuard pero WireGuard no esta instalado: hace \
-             falta para poder conectarlos.",
-        en: "You have WireGuard tunnels but WireGuard is not installed: it is \
-             required in order to connect them."
+    /// Se muestra en el dialogo de importacion, no como banner permanente: es
+    /// el momento en que el usuario esta pendiente del asunto. Importar se
+    /// permite igualmente, asi que el texto lo dice para que nadie crea que la
+    /// importacion ha fallado.
+    ImportWgNeedsWireGuard => {
+        es: "WireGuard no esta instalado en este equipo. Puedes importar el \
+             tunel igualmente, pero no podras conectarlo hasta que lo instales.",
+        en: "WireGuard is not installed on this computer. You can still import \
+             the tunnel, but you will not be able to connect it until you \
+             install WireGuard."
     },
     BtnRetry          => { es: "Reintentar",       en: "Retry" },
     NoProfilesYet     => {
