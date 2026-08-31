@@ -89,9 +89,9 @@ impl SvcClient {
         }
     }
 
-    pub async fn start_wireguard_tunnel(config_path: &str, tunnel_name: &str) -> Result<(), SvcClientError> {
+    pub async fn start_wireguard_tunnel(config: &str, tunnel_name: &str) -> Result<(), SvcClientError> {
         let request = IpcRequest::StartWireGuardTunnel {
-            config_path: config_path.to_string(),
+            config: config.to_string(),
             tunnel_name: tunnel_name.to_string(),
         };
         match send_request(request).await? {

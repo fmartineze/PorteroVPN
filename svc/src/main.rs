@@ -323,8 +323,8 @@ async fn handle_request(request: IpcRequest) -> IpcResponse {
             });
             IpcResponse::BitLockerStatus(status)
         }
-        IpcRequest::StartWireGuardTunnel { config_path, tunnel_name } => {
-            match start_wireguard_tunnel(&config_path, &tunnel_name).await {
+        IpcRequest::StartWireGuardTunnel { config, tunnel_name } => {
+            match start_wireguard_tunnel(&config, &tunnel_name).await {
                 Ok(()) => IpcResponse::WireGuardStarted,
                 Err(e) => {
                     tracing::error!("fallo al levantar el tunel de WireGuard: {e:#}");
@@ -513,7 +513,57 @@ async fn run_wireguard_cli(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-async fn start_wireguard_tunnel(config_path: &str, tunnel_name: &str) -> Result<()> {
+/// Directorio propio del servicio para las configuraciones de WireGuard.
+///
+/// **Fuera del arbol de datos de la GUI a proposito.** La GUI abre permisos de
+/// `BUILTIN\Users` sobre todo lo que hay bajo `%ProgramData%\PorteroVPN\`
+/// (ver `storage::acl`, que lo hace recursivamente en cada arranque), asi que
+/// un `.conf` con la clave privada dentro de ese arbol quedaria legible por
+/// cualquier usuario del equipo -- y volveria a quedarlo tras cada reparacion
+/// de permisos, aunque se restringiera al crearlo.
+fn wireguard_config_dir() -> std::path::PathBuf {
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    std::path::PathBuf::from(program_data).join("PorteroVPNSvc")
+}
+
+fn wireguard_config_path(tunnel_name: &str) -> std::path::PathBuf {
+    // El nombre del fichero ES el nombre del tunel: `wireguard.exe` bautiza con
+    // el el tunel y su adaptador de red.
+    wireguard_config_dir().join(format!("{tunnel_name}.conf"))
+}
+
+/// Deja el fichero accesible solo a SYSTEM y Administradores.
+///
+/// Se usa `icacls` por el mismo motivo que en `storage::acl` del crate
+/// principal: manipular DACLs a mano resulto fragil, y esta es la herramienta
+/// estandar para exactamente esto. `/inheritance:r` corta la herencia del
+/// directorio antes de conceder, o los permisos heredados seguirian valiendo.
+fn restrict_to_administrators(path: &std::path::Path) -> Result<()> {
+    /// SIDs bien conocidos, en vez de nombres: "Administradores" cambia con el
+    /// idioma del sistema.
+    const SYSTEM_SID: &str = "*S-1-5-18";
+    const ADMINISTRATORS_SID: &str = "*S-1-5-32-544";
+
+    let output = std::process::Command::new("icacls")
+        .arg(path)
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg(format!("{SYSTEM_SID}:F"))
+        .arg("/grant:r")
+        .arg(format!("{ADMINISTRATORS_SID}:F"))
+        .output()
+        .context("no se pudo ejecutar icacls sobre la configuracion del tunel")?;
+
+    anyhow::ensure!(
+        output.status.success(),
+        "icacls fallo sobre la configuracion del tunel: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
+async fn start_wireguard_tunnel(config: &str, tunnel_name: &str) -> Result<()> {
     anyhow::ensure!(
         svc_ipc::wireguard_path::is_ours(tunnel_name),
         "nombre de tunel inesperado: {tunnel_name}"
@@ -524,8 +574,53 @@ async fn start_wireguard_tunnel(config_path: &str, tunnel_name: &str) -> Result<
     // no es un error.
     let _ = run_wireguard_cli(&["/uninstalltunnelservice", tunnel_name]).await;
 
-    run_wireguard_cli(&["/installtunnelservice", config_path]).await?;
+    let dir = wireguard_config_dir();
+    std::fs::create_dir_all(&dir).context("no se pudo crear el directorio de configuraciones")?;
+    let path = wireguard_config_path(tunnel_name);
+    std::fs::write(&path, config).context("no se pudo escribir la configuracion del tunel")?;
+    // Antes de instalar nada: en cuanto exista el servicio, el fichero es la
+    // clave del tunel.
+    restrict_to_administrators(&path)?;
+
+    run_wireguard_cli(&["/installtunnelservice", &path.to_string_lossy()]).await?;
+
+    // `/installtunnelservice` deja el servicio del tunel en arranque
+    // AUTOMATICO. Eso significaria que tras un reinicio la VPN se levanta sola
+    // **sin pasar por las comprobaciones de seguridad**, que es justo lo que
+    // esta aplicacion existe para impedir. Se pasa a arranque manual: el tunel
+    // solo sube cuando la GUI lo pide, y solo lo pide si los checks pasan.
+    if let Err(e) = set_tunnel_start_type_manual(tunnel_name).await {
+        // No es motivo para tumbar la conexion, pero si para dejar constancia:
+        // el tunel quedaria en automatico y volveria solo tras un reinicio.
+        tracing::error!(error = %e, tunnel_name, "no se pudo pasar el tunel a arranque manual");
+    }
+
     tracing::info!(tunnel_name, "tunel de WireGuard levantado");
+    Ok(())
+}
+
+/// Nombre con el que el Service Control Manager registra un tunel de
+/// WireGuard.
+fn tunnel_service_name(tunnel_name: &str) -> String {
+    format!("WireGuardTunnel${tunnel_name}")
+}
+
+async fn set_tunnel_start_type_manual(tunnel_name: &str) -> Result<()> {
+    let output = Command::new("sc")
+        .arg("config")
+        .arg(tunnel_service_name(tunnel_name))
+        // El espacio tras `start=` es obligatorio en la sintaxis de sc.exe.
+        .arg("start=")
+        .arg("demand")
+        .output()
+        .await
+        .context("no se pudo ejecutar sc.exe")?;
+
+    anyhow::ensure!(
+        output.status.success(),
+        "sc config fallo: {}",
+        String::from_utf8_lossy(&output.stdout).trim()
+    );
     Ok(())
 }
 
@@ -534,7 +629,18 @@ async fn stop_wireguard_tunnel(tunnel_name: &str) -> Result<()> {
         svc_ipc::wireguard_path::is_ours(tunnel_name),
         "nombre de tunel inesperado: {tunnel_name}"
     );
-    run_wireguard_cli(&["/uninstalltunnelservice", tunnel_name]).await?;
+    let result = run_wireguard_cli(&["/uninstalltunnelservice", tunnel_name]).await;
+
+    // La configuracion se borra aunque quitar el tunel haya fallado: es la
+    // clave privada del par y no tiene por que sobrevivir a la conexion.
+    let path = wireguard_config_path(tunnel_name);
+    if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(error = %e, path = %path.display(), "no se pudo borrar la configuracion del tunel");
+        }
+    }
+
+    result?;
     tracing::info!(tunnel_name, "tunel de WireGuard retirado");
     Ok(())
 }

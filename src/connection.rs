@@ -821,25 +821,27 @@ async fn run_wireguard_connection(
 
     let _ = events.send(AppEvent::Connecting { last_state: t(Msg::ConnStarting).to_string() });
 
-    // El `.conf` vive cifrado en el metadato; hay que materializarlo para que
-    // wireguard.exe pueda leerlo, y borrarlo en cuanto termine de usarlo.
-    let config_path = match materialize_wireguard_config(profile, &tunnel_name) {
-        Ok(path) => path,
+    // El `.conf` vive cifrado en el metadato. Se descifra aqui y viaja por el
+    // pipe hasta el servicio, que es quien lo escribe: tiene que sobrevivir al
+    // tunel (wireguard.exe lo relee en cada arranque del servicio del tunel) y
+    // no puede quedarse en el arbol de datos de la GUI, donde seria legible por
+    // cualquier usuario del equipo. Ver `IpcRequest::StartWireGuardTunnel`.
+    let config = match storage::wireguard_config(profile) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                let _ = events.send(AppEvent::Error(t(Msg::ErrWireGuardConfigInvalid).to_string()));
+                return;
+            }
+        },
         Err(e) => {
             let _ = events.send(AppEvent::Error(i18n::could_not_prepare_connection(&e.to_string())));
             return;
         }
     };
 
-    let start = SvcClient::start_wireguard_tunnel(
-        &config_path.to_string_lossy(),
-        &tunnel_name,
-    )
-    .await;
-
-    // Se borra pase lo que pase: contiene la clave privada del par y no debe
-    // quedarse en disco ni un momento mas del necesario.
-    let _ = std::fs::remove_file(&config_path);
+    let start = SvcClient::start_wireguard_tunnel(&config, &tunnel_name).await;
+    drop(config);
 
     if let Err(e) = start {
         let _ = events.send(AppEvent::Error(e.to_string()));
@@ -856,20 +858,6 @@ async fn run_wireguard_connection(
     storage::clear_active_tunnel_marker();
 }
 
-/// Escribe el `.conf` en claro a `run\`, con el patron de un solo uso del
-/// passfile de la management interface (ver `generate_passfile`).
-///
-/// **El nombre del fichero importa**: `wireguard.exe /installtunnelservice`
-/// bautiza el tunel -- y con el, el adaptador de red -- con el nombre base del
-/// `.conf`. Tiene que ser exactamente `tunnel_name`.
-fn materialize_wireguard_config(profile: &ProfileMeta, tunnel_name: &str) -> io::Result<PathBuf> {
-    let config = storage::wireguard_config(profile)?;
-    storage::ensure_data_dirs()?;
-    let path = storage::run_dir().join(format!("{tunnel_name}.conf"));
-    std::fs::write(&path, config)?;
-    Ok(path)
-}
-
 /// Sondea el tunel hasta que el usuario cancela.
 ///
 /// Es donde vive el indicador que pidio el usuario: no basta con "levantado",
@@ -883,6 +871,7 @@ async fn monitor_wireguard_tunnel(
     mut log_file: Option<&mut File>,
 ) {
     let mut connected_announced = false;
+    let mut last_query_error: Option<String> = None;
     let waiting_since = tokio::time::Instant::now();
 
     loop {
@@ -899,27 +888,32 @@ async fn monitor_wireguard_tunnel(
             _ = tokio::time::sleep(WG_POLL_INTERVAL) => {}
         }
 
+        // Un fallo al consultar no prueba que el tunel este caido, pero
+        // tampoco permite certificar que viva. Se refleja como "sin handshake"
+        // y, sobre todo, **cuenta para el plazo de abajo**: si no, un error
+        // repetido -- p.ej. el servicio del tunel murio al arrancar y su pipe
+        // no existe -- dejaba el bucle sondeando para siempre y la UI clavada
+        // en "Conectando..." sin dar nunca un motivo.
         let status = match SvcClient::query_wireguard_status(tunnel_name).await {
-            Ok(status) => status,
+            Ok(status) => {
+                let _ = events.send(AppEvent::ByteCount {
+                    bytes_in: status.rx_bytes,
+                    bytes_out: status.tx_bytes,
+                });
+                Some(status)
+            }
             Err(e) => {
-                // Que el servicio no sepa responder no significa que el tunel
-                // este caido, pero tampoco se puede certificar que viva: se
-                // avisa y se sigue sondeando.
                 tracing::warn!(error = %e, tunnel_name, "no se pudo consultar el estado del tunel");
-                let _ = events.send(AppEvent::TunnelStatus { last_handshake_secs_ago: None });
-                continue;
+                last_query_error = Some(e.to_string());
+                None
             }
         };
 
-        let _ = events.send(AppEvent::ByteCount {
-            bytes_in: status.rx_bytes,
-            bytes_out: status.tx_bytes,
-        });
         let _ = events.send(AppEvent::TunnelStatus {
-            last_handshake_secs_ago: status.last_handshake_secs_ago,
+            last_handshake_secs_ago: status.and_then(|s| s.last_handshake_secs_ago),
         });
 
-        if status.is_alive() {
+        if status.is_some_and(|s| s.is_alive()) {
             if !connected_announced {
                 connected_announced = true;
                 log_line(log_file.as_deref_mut(), "primer handshake completado");
@@ -931,11 +925,15 @@ async fn monitor_wireguard_tunnel(
             continue;
         }
 
-        // Todavia sin handshake: si tarda demasiado, el otro extremo no
-        // responde y no tiene sentido seguir esperando.
+        // Todavia sin handshake: si tarda demasiado, o no responde el otro
+        // extremo o el tunel ni siquiera llego a levantarse.
         if !connected_announced && waiting_since.elapsed() >= WG_FIRST_HANDSHAKE_TIMEOUT {
             log_line(log_file.as_deref_mut(), "sin handshake dentro del plazo");
-            let _ = events.send(AppEvent::Error(t(Msg::ErrWireGuardNoHandshake).to_string()));
+            let message = match last_query_error {
+                Some(detail) => i18n::wireguard_tunnel_unreachable(&detail),
+                None => t(Msg::ErrWireGuardNoHandshake).to_string(),
+            };
+            let _ = events.send(AppEvent::Error(message));
             return;
         }
 

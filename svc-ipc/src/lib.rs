@@ -49,15 +49,25 @@ pub enum IpcRequest {
     /// modulo.
     QueryBitLocker,
 
-    /// `wireguard.exe /installtunnelservice <config_path>`. WireGuard registra
-    /// el tunel como servicio propio de Windows; no queda proceso hijo que
-    /// vigilar, a diferencia de `StartProfile`.
+    /// Levanta un tunel de WireGuard. WireGuard lo registra como servicio
+    /// propio de Windows; no queda proceso hijo que vigilar, a diferencia de
+    /// `StartProfile`.
     ///
-    /// `config_path` apunta a un fichero temporal que la GUI acaba de
-    /// materializar y borrara en cuanto el tunel este levantado: el `.conf`
-    /// contiene la clave privada del par y no se guarda en claro (ver
-    /// `ProfileMeta::config_blob` en el crate principal).
-    StartWireGuardTunnel { config_path: String, tunnel_name: String },
+    /// Viaja el **contenido** del `.conf`, no una ruta, y lo escribe el
+    /// servicio. Dos motivos, los dos aprendidos a base de fallo:
+    ///
+    /// 1. `wireguard.exe /installtunnelservice` **no se queda una copia** de la
+    ///    configuracion: registra el servicio apuntando a la ruta que se le da
+    ///    y la relee en cada arranque. El fichero tiene que sobrevivir al
+    ///    tunel, asi que no puede ser un temporal que la GUI borre acto
+    ///    seguido.
+    /// 2. Ese fichero contiene la clave privada del par en claro. La GUI abre
+    ///    permisos de `BUILTIN\Users` sobre todo su arbol de datos (ver
+    ///    `storage::acl`), asi que escribirlo ahi lo dejaria al alcance de
+    ///    cualquier usuario del equipo. Escribiendolo el servicio, va a un
+    ///    directorio propio con permisos restringidos a SYSTEM y
+    ///    Administradores.
+    StartWireGuardTunnel { config: String, tunnel_name: String },
     /// `wireguard.exe /uninstalltunnelservice <tunnel_name>`.
     StopWireGuardTunnel { tunnel_name: String },
     /// Estado del tunel: cuando fue el ultimo handshake y cuanto se ha

@@ -421,6 +421,10 @@ declare_messages! {
     OutcomeOk => { es: "ok", en: "ok" },
 
     // --- WireGuard -----------------------------------------------------
+    ErrWireGuardConfigInvalid => {
+        es: "La configuracion de WireGuard guardada no es texto valido.",
+        en: "The stored WireGuard configuration is not valid text."
+    },
     ErrWireGuardNoHandshake => {
         es: "El servidor de WireGuard no respondio: el tunel se levanto pero no \
              se completo ningun handshake.",
@@ -661,6 +665,23 @@ pub fn password_rejected_by_mgmt(response: &str) -> String {
 
 /// Antiguedad del ultimo handshake del tunel. En minutos a partir del minuto,
 /// que es cuando los segundos dejan de decir nada util.
+/// Cuando el tunel se levanto pero ni siquiera se pudo consultar su estado:
+/// casi siempre significa que el servicio del tunel murio nada mas arrancar y
+/// su pipe no llego a existir. Se incluye el detalle tecnico porque sin el este
+/// caso es indistinguible de "el servidor no responde".
+pub fn wireguard_tunnel_unreachable(detail: &str) -> String {
+    match current() {
+        Lang::Es => format!(
+            "El tunel de WireGuard se registro pero no responde. Revisa que la configuracion sea \
+             valida. Detalle: {detail}"
+        ),
+        Lang::En => format!(
+            "The WireGuard tunnel was registered but is not responding. Check that the \
+             configuration is valid. Detail: {detail}"
+        ),
+    }
+}
+
 pub fn last_handshake(secs_ago: u64) -> String {
     if secs_ago < 60 {
         match current() {
